@@ -1,147 +1,125 @@
 // Standard Crates
+#[allow(unused)]
 use std::{
-    fmt,
-    collections::HashMap, 
-    error::Error, 
-    thread::sleep, 
-    time::Duration
+    collections::{HashMap, VecDeque}, error::Error, fmt, thread::sleep, time::Duration
 };
 
 // External Crates
 use arboard::Clipboard;
 
 
-// ---------------------------- Error --------------------------------
-#[derive(Debug)]
-#[allow(unused)]
-// Error when you try to overwrite a Pos
-enum PosError {
-    PosOverlap {
-        pos: u8,
-        existing_content: String,
-        new_content: String
-    },
-    PosJump {
-        prev_pos: u8,
-        pos: u8
-    }
-}
+// // ---------------------------- Error --------------------------------
+// #[derive(Debug)]
+// #[allow(unused)]
+// // Error when you try to overwrite a Pos
+// enum PosError {
+//     PosOverlap {
+//         pos: u8,
+//         existing_content: String,
+//         new_content: String
+//     },
+//     PosJump {
+//         prev_pos: u8,
+//         pos: u8
+//     }
+// }
 
-// Displays for the Errors
-impl fmt::Display for PosError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PosError::PosOverlap {pos, existing_content, new_content} => {
-                write!(f, "POS ALREADY EXISTS! POS: {} | EXISTING CONTENT: {} | NEW CONTENT: {}", pos, existing_content, new_content)
-            },
-            PosError::PosJump {prev_pos, pos} => {
-                write!(f, "WARNING! POS JUMP FOUND! PREVIOUS POS: {} | CURRENT POS: {}", prev_pos, pos)
-            }
-        }
-    }
-}
+// // Displays for the Errors
+// impl fmt::Display for PosError {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         match self {
+//             PosError::PosOverlap {pos, existing_content, new_content} => {
+//                 write!(f, "POS ALREADY EXISTS! POS: {} | EXISTING CONTENT: {} | NEW CONTENT: {}", pos, existing_content, new_content)
+//             },
+//             PosError::PosJump {prev_pos, pos} => {
+//                 write!(f, "WARNING! POS JUMP FOUND! PREVIOUS POS: {} | CURRENT POS: {}", prev_pos, pos)
+//             }
+//         }
+//     }
+// }
 
-// Implement the structs as Errors
-impl Error for PosError {}
-// -------------------------------------------------------------------
+// // Implement the structs as Errors
+// impl Error for PosError {}
+// // -------------------------------------------------------------------
 
 
 // ---------------------- Clipboard Structs --------------------------
 // Note: Using "C" for now.
 // Consider using specific types from arboard later on.
-
 #[allow(unused)]
-struct ClipBoardItem<C> {
-    pos: u8,
-    item: C
+#[derive(Debug, Clone, PartialEq)] // PartialEQ needed for comparision
+enum ClipboardItem {
+    Text(String)
+}
+
+impl fmt::Display for ClipboardItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ClipboardItem::Text(s) => write!(f, "{}", s),
+        }
+    }
 }
 
 #[allow(unused)]
-struct ClipboardHistory<C> {
-    history: HashMap<u8, C>
-    // Or should it be Vec<ClipboardItem> ????
+struct ClipboardHistory {
+    history: VecDeque<ClipboardItem>,
+    max_size: usize,
 }
 // -------------------------------------------------------------------
 
 
 // --------------------- Hist Implementation -------------------------
-// Note: Using "C" for now.
-// Consider using specific types from arboard later on.
-
 #[allow(unused)]
-impl<C> ClipboardHistory<C> 
-where 
-    C: Clone 
-{
-    // Creates as new Hashmap
-    fn new() -> Self {
-        Self { 
-            history: HashMap::new()
+impl ClipboardHistory {
+    fn new(max_size: usize) -> Self {
+        Self {
+            history: VecDeque::with_capacity(max_size),
+            max_size,
         }
     }
 
-    // Adds a new item to the HashMap
-    fn append(&mut self, pos: u8, item: C) -> Result<(), PosError> 
-    where 
-        C: fmt::Display 
-    {
-        // Needed Features (todo):
-        // 1. Check if the same content already exists. If yes, just promote to top.
-        // 2. Check if the passed pos is valid or overwriting. If overwriting, throw error.
-        // 3. Check if there is a jump in pos (0, 2, 3, ...)
-        // 4. Ensure proper ascenind order (no 2, 1, 3)
-        // 5. Ensure positive values (no -1, -2)
-        // 6. Ensure proper start (0, 1, 2... AND not 2, 3, 4...)
-        // ?7. Manage Pos within history?
-        
-        // Check for overlapping Pos
-
-        if self.history.contains_key(&pos) {
-            return Err(PosError::PosOverlap { 
-                pos, 
-                existing_content: self.history.get(&pos).unwrap().to_string(), 
-                new_content: item.to_string() 
-            });
+    // Adds a new Clipboard item to history
+    fn add(&mut self, item: ClipboardItem) {
+        // Check for item duplicates
+        if let Some(pos) = self.history.iter().position(|i| i == &item) {
+            // It already exists. Promote it.
+            self.promote(pos);
+            return;
         }
 
-        self.history.insert(pos, item);
+        // Add to 0 (front)
+        self.history.push_front(item);
 
-        Ok(())
+        // Remove old items as size exceeds
+        if self.history.len() > self.max_size {
+            self.history.pop_back();
+        }
     }
 
-    // Shifts an item to top of list while re-ordering the 
-    fn promote(&mut self, pos: u8) {
-        // Remove the value from HashMap
-        let promoted_value = self.history.remove(&pos).unwrap();
-        
-        // Re-Order the positions.
-        // Promoted value (x) => 0. Other values till (x) => x + 1
-        // Holy jesus this is expensive
-        self.history = self.history
-        .iter()
-        .map(|(key, value)| {
-            let new_key = if key < &pos { key + 1 } else { *key };
-            (new_key, value.clone())
-        }).collect();
+    // Given an index, it will push it to the TOP
+    fn promote(&mut self, pos: usize) {
+        // Remove item as 'pos'th index
+        let promoted_item = self.history.remove(pos).unwrap();
 
-        // Promote the selected value to TOP
-        self.history.insert(0, promoted_value);
+        // Add it to history's TOP
+        self.history.push_front(promoted_item);
+    }
+
+    // Returns all Items of the clipboard history
+    fn get_items(&self) -> &VecDeque<ClipboardItem> {
+        &self.history
     }
 
 }
 
-// Display for ClipboardHistory
-impl fmt::Display for ClipboardHistory<&str> {
+// Display for ClipboardHistory is now much simpler
+impl fmt::Display for ClipboardHistory {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut printable = String::from("POS     | ITEM     ");
         printable += "\r\n---------------";
         
-        // Sort the keys before iterating
-        let mut positions: Vec<&u8> = self.history.keys().collect();
-        positions.sort();
-        
-        for &pos in positions {
-            let item = self.history.get(&pos).unwrap();
+        // No sorting needed! Just iterate.
+        for (pos, item) in self.history.iter().enumerate() {
             printable += &format!("\r\n{}       | {}     ", pos, item);
         }
         
@@ -151,7 +129,7 @@ impl fmt::Display for ClipboardHistory<&str> {
 // -------------------------------------------------------------------
 
 
-// --------------------- Basically a monitor -------------------------
+// -------------------- Monitor, just for fun ------------------------
 #[allow(unused)]
 trait Monitor {
     fn monitor(&mut self);
@@ -175,7 +153,9 @@ impl Monitor for Clipboard {
                 previous_content = content;
             }
 
-            sleep(Duration::from_millis(1000));
+            // To prevent overloading? 
+            // (perhaps not an issue in rust like it is on python)
+            sleep(Duration::from_millis(100));
         }
     }
 }
@@ -184,10 +164,10 @@ impl Monitor for Clipboard {
 
 // ----------------------------- Main --------------------------------
 fn main() {
-    let mut ch = ClipboardHistory::new();
-    ch.append(0, "mioaw").unwrap();
-    ch.append(1, "woof").unwrap();
-    ch.append(2, "rawr").unwrap();
+    let mut ch = ClipboardHistory::new(20);
+    ch.add(ClipboardItem::Text("miaow".to_string()));
+    ch.add(ClipboardItem::Text("woof".to_string()));
+    ch.add(ClipboardItem::Text("rawr".to_string()));
     ch.promote(1);
     println!("{ch}");
 }
