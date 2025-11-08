@@ -1,6 +1,9 @@
 [package]
-name = "super-v"
+name = "wl-kbd-print"
 version = "0.1.0"
-edition = "2025"
+edition = "2024"
 
 [dependencies]
+arboard = "3.6.1"
+rdev = "0.5.3"
+termion = "4.0.5"
