@@ -24,7 +24,7 @@ use crate::{
     history::ClipboardHistory
 };
 
-pub fn poll(stop_signal:Arc<AtomicBool>, history: Arc<Mutex<ClipboardHistory>>) {
+pub fn poll(stop_signal:Arc<AtomicBool>, history: Arc<Mutex<ClipboardHistory>>) -> () {
     // Create a new clipboard service
     let mut clipboard_service = Clipboard::new().unwrap();
 
