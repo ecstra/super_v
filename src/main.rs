@@ -5,11 +5,12 @@
 use arboard::{Clipboard};
 
 // My Crates
-use super_v::monitor::Monitor;
+use super_v::services::clipboard_monitor::Monitor;
 
 /*
 Notes:
 - Add tests
+- STOP USING UNWRAP
 - Threaded Clipboard Manager that has a polling mechanism and manages history.
 - Keyboard simulation using rdev (to paste when item is clicked)
 - Mouse pointer monitoring to open the window at cursor location

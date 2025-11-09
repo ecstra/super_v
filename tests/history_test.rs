@@ -5,7 +5,7 @@ mod history_tests {
     use super_v::{common::ClipboardItem, history::ClipboardHistory};
     
     #[test]
-    fn add_check() {
+    fn test_history_add_item() {
         // Create history
         let mut history = ClipboardHistory::new(5);
 
@@ -20,7 +20,7 @@ mod history_tests {
     }
 
     #[test]
-    fn exact_capacity_fill() {
+    fn test_capacity_fill_and_overflow() {
         // Create history
         let mut history = ClipboardHistory::new(5);
 
@@ -41,12 +41,12 @@ mod history_tests {
         history.add(item6.clone());
 
         // Check if history auto manages the size by popping the oldest entry
-        assert_eq!(history.get_items().len(), 5);
+        assert!(history.get_items().len() == 5, "Length must be 5, but got {}", history.get_items().len());
         assert_eq!(history.get_items(), &VecDeque::from([item6, item5, item4, item3, item2]));
     }
 
     #[test]
-    fn promotion() {
+    fn test_item_promotion() {
         // Create history
         let mut history = ClipboardHistory::new(5);
         
@@ -70,7 +70,7 @@ mod history_tests {
 
     #[test]
     #[should_panic]
-    fn promote_out_of_bounds_panic() {
+    fn test_promote_out_of_bounds_panic() {
         // Create history with items
         let mut history = ClipboardHistory::new(5);
         
@@ -83,7 +83,7 @@ mod history_tests {
 
     #[test]
     #[should_panic]
-    fn promote_empty_history_panic() {
+    fn test_promote_empty_history_panic() {
         // Create empty history
         let mut history = ClipboardHistory::new(5);
         
@@ -93,7 +93,7 @@ mod history_tests {
 
     #[test]
     #[should_panic]
-    fn promote_negative_bounds_panic() {
+    fn test_promote_negative_bounds_panic() {
         // Create history with items
         let mut history = ClipboardHistory::new(5);
         
@@ -108,7 +108,7 @@ mod history_tests {
     }
 
     #[test]
-    fn zero_capacity_history() {
+    fn test_zero_capacity_history() {
         // Test edge case: history with 0 capacity
         let mut history = ClipboardHistory::new(0);
         
@@ -121,7 +121,7 @@ mod history_tests {
     }
 
     #[test]
-    fn large_image_data() {
+    fn test_large_image_data() {
         // Test with large image data to ensure no memory issues
         let mut history = ClipboardHistory::new(3);
         
@@ -140,7 +140,7 @@ mod history_tests {
     }
 
     #[test]
-    fn empty_text_item() {
+    fn test_empty_text_item() {
         // Test edge case: empty string
         let mut history = ClipboardHistory::new(5);
         
@@ -152,7 +152,7 @@ mod history_tests {
     }
 
     #[test]
-    fn very_long_text_item() {
+    fn test_very_long_text_item() {
         // Test with very long text
         let mut history = ClipboardHistory::new(5);
         
@@ -169,7 +169,7 @@ mod history_tests {
     }
 
     #[test]
-    fn special_characters_in_text() {
+    fn test_special_characters_in_text() {
         // Test with special characters and unicode
         let mut history = ClipboardHistory::new(5);
         
@@ -181,7 +181,7 @@ mod history_tests {
     }
 
     #[test]
-    fn zero_dimension_image() {
+    fn test_zero_dimension_image() {
         // Test edge case: image with zero dimensions
         let mut history = ClipboardHistory::new(5);
         
@@ -198,7 +198,7 @@ mod history_tests {
     }
 
     #[test]
-    fn multiple_promote_same_pos() {
+    fn test_multiple_promote_same_pos() {
         // Test promoting the same item multiple times
         let mut history = ClipboardHistory::new(5);
         
@@ -219,7 +219,7 @@ mod history_tests {
     }
 
     #[test]
-    fn duplicate_handling() {
+    fn test_duplicate_handling() {
         // Create history
         let mut history = ClipboardHistory::new(5);
         
@@ -238,7 +238,7 @@ mod history_tests {
     }
 
     #[test]
-    fn clear_history() {
+    fn test_clear_history() {
         // Create history
         let mut history = ClipboardHistory::new(5);
         
@@ -254,13 +254,13 @@ mod history_tests {
     }
 
     #[test]
-    fn empty_history_operations() {
+    fn test_empty_history_operations() {
         let history = ClipboardHistory::new(5);
         assert_eq!(history.get_items().len(), 0);
     }
 
     #[test]
-    fn image_items() {
+    fn test_image_items() {
         // Create history
         let mut history = ClipboardHistory::new(3);
         
@@ -286,7 +286,7 @@ mod history_tests {
     }
 
     #[test]
-    fn mixed_content_types() {
+    fn test_mixed_content_types() {
         // Create history
         let mut history = ClipboardHistory::new(5);
         
@@ -307,7 +307,7 @@ mod history_tests {
     }
 
     #[test]
-    fn promote_first_item() {
+    fn test_promote_first_item() {
         // Create history
         let mut history = ClipboardHistory::new(3);
         
@@ -326,7 +326,7 @@ mod history_tests {
     }
 
     #[test]
-    fn promote_last_item() {
+    fn test_promote_last_item() {
         // Create history
         let mut history = ClipboardHistory::new(5);
         
@@ -347,7 +347,7 @@ mod history_tests {
     }
 
     #[test]
-    fn single_capacity_history() {
+    fn test_single_capacity_history() {
         // Create history
         let mut history = ClipboardHistory::new(1);
         

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 arboard = "3.6.1"
+ctrlc = "3.5.1"
 rdev = "0.5.3"
 
 termion = "4.0.5" # Termporary for handling debug in terminal

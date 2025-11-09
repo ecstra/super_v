@@ -1,3 +1,4 @@
+use core::panic;
 // Standard Crates
 #[allow(unused)]
 use std::{
@@ -28,12 +29,6 @@ impl ClipboardHistory {
     /// # Arguments
     /// 
     /// * `max_size` - The maximum number of items to keep in history
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// let history = ClipboardHistory::new(10);
-    /// ```
     pub fn new(max_size: usize) -> Self {
         Self {
             history: VecDeque::with_capacity(max_size),
@@ -78,10 +73,15 @@ impl ClipboardHistory {
     /// Panics if the position is out of bounds
     pub fn promote(&mut self, pos: usize) {
         // Remove item as 'pos'th index
-        let promoted_item = self.history.remove(pos).unwrap();
-
-        // Add it to history's TOP
-        self.history.push_front(promoted_item);
+        let promoted_item = match self.history.remove(pos) {
+            Some(item) => {
+                self.history.push_front(item)
+            },
+            None => {
+                // No item found
+                panic!("Item position not found or out-of-bounds.");
+            },
+        };
     }
 
     /// Returns a reference to all items in the clipboard history.

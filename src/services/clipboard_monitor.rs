@@ -28,7 +28,7 @@ use termion::{
     raw::IntoRawMode
 };
 
-// Custom Crates
+// My Crates
 use crate::common::GetItem;
 
 // -------------------- Monitor, just for fun ------------------------
@@ -51,9 +51,9 @@ impl Monitor for Clipboard {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```no_run
     /// use arboard::Clipboard;
-    /// use crate::monitor::Monitor;
+    /// use super_v::services::clipboard_monitor::Monitor;
     /// 
     /// let clipboard = Clipboard::new().unwrap();
     /// clipboard.monitor(); // <- Consumes Clipboard. Do not use for polling
@@ -95,7 +95,7 @@ impl Monitor for Clipboard {
         });
         
         let clipboard = Arc::new(Mutex::new(self));
-        
+
         let cm_handle = thread::spawn(move || {
             let mut stdout = stdout().into_raw_mode().unwrap();
 
