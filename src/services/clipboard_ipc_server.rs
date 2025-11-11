@@ -19,7 +19,13 @@ use serde::{
 use rmp_serde::{Serializer};
 
 // My Crates
-use crate::{common::{IPCServerError}, history::ClipboardHistory};
+use crate::{
+    common::{
+        IPCServerError,
+        SOCKET_PATH
+    }, 
+    history::ClipboardHistory
+};
 
 // ------------------------- IPC Items -------------------------------
 /// Represents the commands that IPC Supports
@@ -87,9 +93,7 @@ impl Payload {
 }
 // -------------------------------------------------------------------
 
-const SOCKET_PATH: &str = "/tmp/super_v.sock";
-
-/// Creates and binds a new Unix domain socket listener at `/tmp/super_v.sock`.
+/// Creates and binds a new Unix domain socket listener at SOCKET_PATH.
 ///
 /// # Behavior
 /// - If an existing server is already bound to the socket path, it returns an error.
@@ -129,7 +133,7 @@ pub fn create_bind() -> Result<UnixListener, IPCServerError> {
     Ok(listener)
 }
 
-/// Attempts to connect to the default Unix socket at `/tmp/super_v.sock`.
+/// Attempts to connect to the default Unix socket at SOCKET_PATH.
 ///
 /// # Behavior
 /// - Returns a connected `UnixStream` if the socket is active.

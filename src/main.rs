@@ -11,15 +11,19 @@ use clap::{
 
 // My Crates
 use super_v::{
+    common::{
+        LOCK_PATH, 
+        SOCKET_PATH
+    }, 
     services::{
-        clipboard_manager::Manager,
         clipboard_ipc_server::{
-            read_payload,
-            send_payload,
-            create_default_stream,
-            CmdIPC,
-            Payload
-        }
+            CmdIPC, 
+            Payload, 
+            create_default_stream, 
+            read_payload, 
+            send_payload
+        }, 
+        clipboard_manager::Manager
     }
 };
 
@@ -93,8 +97,8 @@ fn main() {
             println!("{:?}", resp);
         },
         Command::Clean => {
-            let _ = remove_file("/tmp/super_v.sock");
-            let _ = remove_file("/tmp/super_v.lock");
+            let _ = remove_file(SOCKET_PATH);
+            let _ = remove_file(LOCK_PATH);
         }
     }
 }

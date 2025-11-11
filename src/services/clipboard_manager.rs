@@ -34,7 +34,9 @@ use crate::{
     common::{ 
         ClipboardItem, 
         GetItem,
-        DaemonError
+        DaemonError,
+        LOCK_PATH,
+        SOCKET_PATH
     },
     services::clipboard_ipc_server::{
         create_bind,
@@ -79,7 +81,6 @@ pub struct Manager {
 impl Manager {
     // Clipboard Size
     const CLIPBOARD_SIZE: usize = 25;
-    const LOCK_PATH: &str = "/tmp/super_v.lock";
 
     /// Create a new Manager instance and configure global handlers.
     ///
@@ -129,7 +130,7 @@ impl Manager {
         let lock_file = OpenOptions::new()
             .create(true)
             .write(true)
-            .open(Self::LOCK_PATH)
+            .open(LOCK_PATH)
             .expect("Failed to open lock file");
 
         // Return error if lock fails
@@ -143,6 +144,8 @@ impl Manager {
         let _ = lock_file.sync_all();
         
         // Once file lock is gotten, create a new IPC Server
+        // But first clear the previous sock file. Since we know we are the main owner of the manager.
+        let _ = remove_file(SOCKET_PATH);
         let server = match create_bind().map_err(|err| DaemonError::IPCErr(err)) {
             Ok(server) => {server},
             Err(err) => {
@@ -243,8 +246,8 @@ impl Manager {
                     }
                 }
 
-                // Poll every 500ms
-                sleep(Duration::from_millis(500));
+                // Poll every 100ms
+                sleep(Duration::from_millis(100));
             }
         }));
     }
@@ -366,8 +369,6 @@ impl Manager {
                                                         },
                                                         Err(_) => {_send_err(&mut s, "Could not promote item. Index out of bounds.");},
                                                     };
-
-
                                                 },
                                                 Err(_) => {
                                                     _send_err(&mut s, "Could not unlock history");
@@ -391,7 +392,7 @@ impl Manager {
                                     }
                                 },
                                 Payload::Resp(_) => {
-                                    eprintln!("Wrong Payload type recieved. Expected CmdIpc but got IPCResponse.")
+                                    _send_err(&mut s, "Wrong Payload type recieved. Expected CmdIpc but got IPCResponse.");
                                 }
                             }
                         });
@@ -465,8 +466,8 @@ impl Manager {
         // Swallows the error.
         if let Some(lockfile) = &self._lock_file {
             let _ = lockfile.unlock();
-            let _ = remove_file("/tmp/super_v.sock");
-            let _ = remove_file("/tmp/super_v.lock");
+            let _ = remove_file(SOCKET_PATH);
+            let _ = remove_file(LOCK_PATH);
         }
     }
 }

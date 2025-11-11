@@ -12,6 +12,12 @@ use serde::{
     Deserialize
 };
 
+// ------------------------- Constants --------------------------------
+pub const SOCKET_PATH: &str = "/tmp/super_v.sock";
+pub const LOCK_PATH: &str = "/tmp/super_v.lock";
+// --------------------------------------------------------------------
+
+
 // --------------------------- Errors --------------------------------
 /// Error types for clipboard operations.
 #[derive(Debug, PartialEq)]

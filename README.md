@@ -36,7 +36,7 @@ A modern clipboard manager for Linux that maintains a persistent history of your
    - Serializable for IPC transmission
 3. **IPC Server** (`clipboard_ipc_server.rs`)
 
-   - Unix domain socket at `/tmp/super_v.sock`
+   - Unix domain socket at `LOCK_PATH` (check common.rs)
    - MessagePack serialization for efficient data transfer
    - Supports commands: Snapshot, Promote, Delete, Clear
 
@@ -47,6 +47,8 @@ A modern clipboard manager for Linux that maintains a persistent history of your
 - Rust toolchain (2024 edition)
 - Linux system with systemd
 - X11 or Wayland session
+
+> **Note**: This should theoretically work on Wayland as well since the packages used support wayland. This is being developed on XWayland and is mainly meant for X11/XWayland.
 
 ### Build and Install
 
@@ -98,7 +100,7 @@ super_v clean
 
 ### IPC Commands
 
-The daemon accepts the following commands via Unix socket (`/tmp/super_v.sock`):
+The daemon accepts the following commands via Unix socket (`SOCKET_PATH` - check common.rs):
 
 #### Commands (CmdIPC)
 
