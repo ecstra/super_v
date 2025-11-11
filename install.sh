@@ -40,7 +40,6 @@ Type=simple
 Environment=RUST_BACKTRACE=1
 Environment=RUST_LOG=info
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.60V7F3
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStartPre=/usr/local/bin/super_v clean
 ExecStart=/usr/local/bin/super_v start

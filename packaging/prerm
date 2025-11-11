@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if command -v systemctl >/dev/null 2>&1; then
+  # Stop and disable system service on removal/upgrade
+  systemctl stop super_v.service 2>/dev/null || true
+  systemctl disable super_v.service 2>/dev/null || true
+  systemctl daemon-reload || true
+fi
+
+exit 0

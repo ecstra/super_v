@@ -59,6 +59,10 @@ cargo build --release
 # Install as systemd user service
 chmod +x install.sh
 ./install.sh
+
+# Alternatively, install as dpkg (system-wide. Needs sudo)
+cargo deb --no-build
+sudo dpkg -i ./target/debian/super-v_0.1.0-1_amd64.deb 
 ```
 
 The install script will:
@@ -69,25 +73,13 @@ The install script will:
 - Enable and start the service
 - Configure automatic restart on failure
 
-### Start the Service
-
-```bash
-# Enable and start
-systemctl --user enable super_v.service
-systemctl --user start super_v.service
-
-# Check status
-systemctl --user status super_v.service
-
-# View logs
-journalctl --user -u super_v.service -f
-```
-
 ## Usage
 
 ### Command Line Interface
 
 ```bash
+# Needs sudo if installed through dpkg
+
 # Start the daemon manually (usually handled by systemd)
 super_v start
 
