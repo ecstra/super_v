@@ -193,16 +193,21 @@ fn refresh_items(
                 })
                 .unwrap_or(0);
             
-            // Instantly remove from GUI
-            items_box_clone.remove(&item_box_to_remove);
+            // Trigger delete animation
+            item_box_to_remove.add_css_class("deleting");
             
-            // Schedule empty state check after removal completes
-            let items_box_check = items_box_clone.clone();
+            // Remove from GUI after animation completes
+            let items_box_remove = items_box_clone.clone();
+            let item_to_remove = item_box_to_remove.clone();
             let window_check = window_for_delete.clone();
             let clipboard_check = clipboard_for_delete.clone();
-            gtk::glib::idle_add_local_once(move || {
-                if items_box_check.first_child().is_none() {
-                    refresh_items(&items_box_check, &window_check, clipboard_check);
+            
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                items_box_remove.remove(&item_to_remove);
+                
+                // Check if empty and show empty state
+                if items_box_remove.first_child().is_none() {
+                    refresh_items(&items_box_remove, &window_check, clipboard_check);
                 }
             });
             
