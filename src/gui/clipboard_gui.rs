@@ -25,7 +25,7 @@ use std::{
     sync::{
         Arc, 
         Mutex
-    }
+    }, time::Duration
 };
 
 const APP_ID: &str = "com.ecstra.super_v";
@@ -185,6 +185,76 @@ fn refresh_items(
     }
 }
 
+fn show_emojis(
+    items_box: &gtk::Box,
+    window: &gtk::ApplicationWindow,
+    persistent_clipboard: Arc<Mutex<Clipboard>>,
+    search_filter: Option<&str>,
+) {
+    // Clear all existing items
+    while let Some(child) = items_box.first_child() {
+        items_box.remove(&child);
+    }
+
+    // Create a FlowBox for grid layout
+    let flow_box = gtk::FlowBox::new();
+    flow_box.set_hexpand(false);
+    flow_box.set_valign(gtk::Align::Start);
+    flow_box.set_max_children_per_line(8);
+    flow_box.set_min_children_per_line(4);
+    flow_box.set_selection_mode(gtk::SelectionMode::None);
+    flow_box.set_homogeneous(true);
+    flow_box.set_row_spacing(1);
+    flow_box.set_column_spacing(1);
+
+    // Filter emojis based on search
+    let emoji_iter: Vec<&emojis::Emoji> = if let Some(filter) = search_filter {
+        let filter_lower = filter.to_lowercase();
+        emojis::iter()
+            .filter(|e| {
+                e.name().to_lowercase().contains(&filter_lower) ||
+                e.shortcode().map(|s| s.to_lowercase().contains(&filter_lower)).unwrap_or(false)
+            })
+            .collect()
+    } else {
+        emojis::iter().collect() // Show all emojis
+    };
+
+    for emoji in emoji_iter {
+        let emoji_btn = gtk::Button::new();
+        emoji_btn.set_label(emoji.as_str());
+        emoji_btn.set_size_request(36, 36);
+        emoji_btn.add_css_class("emoji-btn");
+        
+        let emoji_str = emoji.as_str().to_string();
+        let window_clone = window.clone();
+        let clipboard_clone = persistent_clipboard.clone();
+        
+        emoji_btn.connect_clicked(move |_| {
+            // Copy emoji to clipboard
+            if let Ok(mut clipboard) = clipboard_clone.lock() {
+                let _ = clipboard.set_text(&emoji_str);
+            }
+            
+            // Delete first clipboard item (position 0) so emoji isn't stored
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(120)); // <- Wait for the emoji to be picked up by the daemon
+                send_command(CmdIPC::Delete(0));
+            });
+            
+            // Create flag file to signal paste should happen
+            let _ = fs::write(SHOULD_PASTE_FLAG, "1");
+            
+            // Close window
+            window_clone.close();
+        });
+        
+        flow_box.insert(&emoji_btn, -1);
+    }
+    
+    items_box.append(&flow_box);
+}
+
 fn build_ui(app: &Application) {
     // -------------------- Window Creation ----------------------
     let window = gtk::ApplicationWindow::builder().build();
@@ -253,6 +323,13 @@ fn build_ui(app: &Application) {
     header_box.append(&clear_all_btn);
     main_box.append(&header_box);
 
+    // Search box (for emojis)
+    let search_entry = gtk::Entry::new();
+    search_entry.set_placeholder_text(Some("Search emojis..."));
+    search_entry.add_css_class("search-entry");
+    search_entry.set_visible(false); // Hidden by default
+    main_box.append(&search_entry);
+
     let scrolled_window = gtk::ScrolledWindow::new();
     scrolled_window.add_css_class("scrollable-window");
     scrolled_window.set_vexpand(true);
@@ -269,6 +346,49 @@ fn build_ui(app: &Application) {
     // Initial items load
     refresh_items(&items_box, &window, persistent_clipboard.clone());
 
+    // Tab switching
+    let items_box_clip = items_box.clone();
+    let window_clip = window.clone();
+    let clipboard_clip = persistent_clipboard.clone();
+    let emoji_tab_clip = emoji_tab.clone();
+    let search_entry_clip = search_entry.clone();
+    let clear_all_clip = clear_all_btn.clone();
+    clipboard_tab.connect_clicked(move |btn| {
+        btn.add_css_class("active-tab");
+        emoji_tab_clip.remove_css_class("active-tab");
+        search_entry_clip.set_visible(false);
+        clear_all_clip.set_visible(true);
+        refresh_items(&items_box_clip, &window_clip, clipboard_clip.clone());
+    });
+
+    let items_box_emoji = items_box.clone();
+    let window_emoji = window.clone();
+    let clipboard_emoji = persistent_clipboard.clone();
+    let clipboard_tab_emoji = clipboard_tab.clone();
+    let search_entry_emoji = search_entry.clone();
+    let clear_all_emoji = clear_all_btn.clone();
+    emoji_tab.connect_clicked(move |btn| {
+        btn.add_css_class("active-tab");
+        clipboard_tab_emoji.remove_css_class("active-tab");
+        search_entry_emoji.set_visible(true);
+        clear_all_emoji.set_visible(false);
+        show_emojis(&items_box_emoji, &window_emoji, clipboard_emoji.clone(), None);
+    });
+
+    // Emoji search
+    let items_box_search = items_box.clone();
+    let window_search = window.clone();
+    let clipboard_search = persistent_clipboard.clone();
+    search_entry.connect_changed(move |entry| {
+        let search_text = entry.text().to_string().to_lowercase();
+        let filter = if search_text.is_empty() {
+            None
+        } else {
+            Some(search_text)
+        };
+        show_emojis(&items_box_search, &window_search, clipboard_search.clone(), filter.as_deref());
+    });
+
     // Clear All button handler
     let items_box_clear = items_box.clone();
     let window_clear = window.clone();
@@ -276,7 +396,6 @@ fn build_ui(app: &Application) {
     clear_all_btn.connect_clicked(move |_| {
         send_command(CmdIPC::Clear);
         refresh_items(&items_box_clear, &window_clear, clipboard_clear.clone());
-        window_clear.close();
     });
 
     // ---------------------- Quit Events ------------------------
