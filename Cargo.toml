@@ -1,6 +1,6 @@
 [package]
 name = "super_v"
-authors = ["ecstranaut"]
+authors = ["ecstra"]
 description = "Super V clipboard manager"
 license = "MIT"
 version = "0.1.0"

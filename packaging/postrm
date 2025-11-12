@@ -1,5 +1,0 @@
-#!/bin/sh
-set -e
-# remove log file created under /var/log (if you created one)
-rm -f /var/log/superv.log || true
-exit 0

@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+echo "[*] installing pre-requisites..."
+sudo apt install build-essential pkg-config libgtk-4-dev libgraphene-1.0-dev libgdk-pixbuf2.0-dev libpango1.0-dev
+
 # build the project as release
 cargo build --release
 strip target/release/super_v

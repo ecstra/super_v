@@ -59,28 +59,21 @@ cargo build --release
 # Install as systemd user service
 chmod +x install.sh
 ./install.sh
-
-# Alternatively, install as dpkg (system-wide. Needs sudo)
-strip target/release/super_v
-cargo deb --no-build
-sudo dpkg -i ./target/debian/super-v_0.1.0-1_amd64.deb 
 ```
 
 The install script will:
 
 - Build the project in release mode
 - Copy the binary to `/usr/local/bin/super_v`
+- Install `ydotoold` and setup it's service.
 - Create a systemd user service at `~/.config/systemd/user/super_v.service`
 - Enable and start the service
-- Configure automatic restart on failure
 
 ## Usage
 
 ### Command Line Interface
 
 ```bash
-# Needs sudo if installed through dpkg
-
 # Start the daemon manually (usually handled by systemd)
 super_v start
 
@@ -94,6 +87,14 @@ super_v clean
 ### IPC Commands
 
 The daemon accepts the following commands via Unix socket (`SOCKET_PATH` - check common.rs):
+
+#### Request (IPCRequest)
+
+```rust
+pub struct IPCRequest {
+    pub cmd: CmdIPC 
+}
+```
 
 #### Commands (CmdIPC)
 
@@ -162,6 +163,9 @@ const CLIPBOARD_SIZE: usize = 25;  // Change this value
 ```bash
 chmod +x uninstall.sh
 ./uninstall.sh
+
+# Or, if installed via deb
+sudo apt remove super-v
 ```
 
 This will:
@@ -235,7 +239,7 @@ Contributions are appreciated. You can help improve Super V in many ways:
    * Click the “Fork” button on GitHub to create your own copy.
 2. **Clone your fork**
    ```bash
-   git clone https://github.com/<your-username>/super_v.git
+   git clone https://github.com/ecstra/super_v.git
    cd super_v
    ```
 3. **Create a new branch**
