@@ -21,7 +21,9 @@ use gtk4::{
 };
 use arboard::Clipboard;
 use std::{
+    cell::{Cell, RefCell},
     fs,
+    rc::Rc,
     sync::{
         Arc, 
         Mutex
@@ -30,6 +32,56 @@ use std::{
 
 const APP_ID: &str = "com.ecstra.super_v";
 pub const SHOULD_PASTE_FLAG: &str = "/tmp/super_v_should_paste";
+
+#[derive(Clone)]
+struct EmojiEntry {
+    button: gtk::Button,
+    search_text: String,
+    matches: Cell<bool>,
+}
+
+struct EmojiMeta {
+    emoji: String,
+    search_text: String,
+}
+
+fn build_emoji_dataset() -> Vec<EmojiMeta> {
+    emojis::iter()
+        .filter(|e| e.as_str() != "🧑‍🩰")
+        .map(|emoji| {
+            let name = emoji.name().to_lowercase();
+            let shortcode = emoji
+                .shortcode()
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
+            let mut search_text = name;
+            if !shortcode.is_empty() {
+                search_text.push(' ');
+                search_text.push_str(&shortcode);
+            }
+            EmojiMeta {
+                emoji: emoji.as_str().to_string(),
+                search_text,
+            }
+        })
+        .collect()
+}
+
+fn apply_emoji_filter(entries: &RefCell<Vec<EmojiEntry>>, filter: &str, flow_box: &gtk::FlowBox) {
+    let filter = filter.trim();
+    let filter_lower = filter.to_lowercase();
+    let show_all = filter_lower.is_empty();
+
+    {
+        let entries_ref = entries.borrow();
+        for entry in entries_ref.iter() {
+            let matches = show_all || entry.search_text.contains(&filter_lower);
+            entry.matches.set(matches);
+        }
+    }
+
+    flow_box.invalidate_filter();
+}
 
 fn append_empty_state(items_box: &gtk::Box) {
     let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -229,75 +281,96 @@ fn show_emojis(
     window: &gtk::ApplicationWindow,
     persistent_clipboard: Arc<Mutex<Clipboard>>,
     search_filter: Option<&str>,
+    emoji_flow_box: &gtk::FlowBox,
+    emoji_entries: Rc<RefCell<Vec<EmojiEntry>>>,
+    emojis_initialized: Rc<Cell<bool>>,
+    emoji_dataset: Rc<Vec<EmojiMeta>>,
+    current_filter: Rc<RefCell<String>>,
 ) {
-    // Clear all existing items
     while let Some(child) = items_box.first_child() {
         items_box.remove(&child);
     }
 
-    // Create a FlowBox for grid layout
-    let flow_box = gtk::FlowBox::new();
-    flow_box.set_hexpand(false);
-    flow_box.set_valign(gtk::Align::Start);
-    flow_box.set_max_children_per_line(8);
-    flow_box.set_min_children_per_line(4);
-    flow_box.set_selection_mode(gtk::SelectionMode::None);
-    flow_box.set_homogeneous(true);
-    flow_box.set_row_spacing(1);
-    flow_box.set_column_spacing(1);
+    items_box.append(emoji_flow_box);
+    emoji_flow_box.show();
 
-    // Filter emojis based on search
-    let emoji_iter: Vec<&emojis::Emoji> = if let Some(filter) = search_filter {
-        let filter_lower = filter.to_lowercase();
-        emojis::iter()
-            .filter(|e| {
-                // Filter out problematic multi-width emoji
-                if e.as_str() == "🧑‍🩰" {
-                    return false;
-                }
-                e.name().to_lowercase().contains(&filter_lower) ||
-                e.shortcode().map(|s| s.to_lowercase().contains(&filter_lower)).unwrap_or(false)
-            })
-            .collect()
+    if let Some(filter) = search_filter {
+        *current_filter.borrow_mut() = filter.to_lowercase();
     } else {
-        emojis::iter()
-            .filter(|e| e.as_str() != "🧑‍🩰") // Filter out problematic multi-width emoji
-            .collect()
-    };
-
-    for emoji in emoji_iter {
-        // let emoji = emoji_iter[0];
-        let emoji_btn = gtk::Button::new();
-        emoji_btn.set_label(emoji.as_str());
-        emoji_btn.add_css_class("emoji-btn");
-        
-        let emoji_str = emoji.as_str().to_string();
-        let window_clone = window.clone();
-        let clipboard_clone = persistent_clipboard.clone();
-        
-        emoji_btn.connect_clicked(move |_| {
-            // Copy emoji to clipboard
-            if let Ok(mut clipboard) = clipboard_clone.lock() {
-                let _ = clipboard.set_text(&emoji_str);
-            }
-            
-            // Delete first clipboard item (position 0) so emoji isn't stored
-            std::thread::spawn(|| {
-                std::thread::sleep(Duration::from_millis(120)); // <- Wait for the emoji to be picked up by the daemon
-                send_command(CmdIPC::Delete(0));
-            });
-            
-            // Create flag file to signal paste should happen
-            let _ = fs::write(SHOULD_PASTE_FLAG, "1");
-            
-            // Close window
-            window_clone.close();
-        });
-        
-        flow_box.insert(&emoji_btn, -1);
+        current_filter.borrow_mut().clear();
     }
-    
-    items_box.append(&flow_box);
+
+    if emojis_initialized.get() {
+        let filter_value = current_filter.borrow().clone();
+        apply_emoji_filter(&emoji_entries, &filter_value, emoji_flow_box);
+        return;
+    }
+
+    emojis_initialized.set(true);
+
+    let flow_box_clone = emoji_flow_box.clone();
+    let entries_clone = emoji_entries.clone();
+    let dataset_clone = emoji_dataset.clone();
+    let window_clone = window.clone();
+    let clipboard_clone = persistent_clipboard.clone();
+    let current_filter_clone = current_filter.clone();
+
+    let progress = Rc::new(Cell::new(0usize));
+    gtk::glib::idle_add_local(move || {
+        let start = progress.get();
+        let dataset = &*dataset_clone;
+        if start >= dataset.len() {
+            let filter_value = current_filter_clone.borrow().clone();
+            apply_emoji_filter(&entries_clone, &filter_value, &flow_box_clone);
+            return gtk::glib::ControlFlow::Break;
+        }
+
+        let chunk_size = 120;
+        let end = (start + chunk_size).min(dataset.len());
+
+        for meta in &dataset[start..end] {
+            let button = gtk::Button::new();
+            button.set_label(&meta.emoji);
+            button.add_css_class("emoji-btn");
+
+            let emoji_str = meta.emoji.clone();
+            let window_click = window_clone.clone();
+            let clipboard_click = clipboard_clone.clone();
+
+            button.connect_clicked(move |_| {
+                if let Ok(mut clipboard) = clipboard_click.lock() {
+                    let _ = clipboard.set_text(&emoji_str);
+                }
+
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(120));
+                    send_command(CmdIPC::Delete(0));
+                });
+
+                let _ = fs::write(SHOULD_PASTE_FLAG, "1");
+                window_click.close();
+            });
+
+            flow_box_clone.insert(&button, -1);
+
+            entries_clone.borrow_mut().push(EmojiEntry {
+                button: button.clone(),
+                search_text: meta.search_text.clone(),
+                matches: Cell::new(true),
+            });
+        }
+
+        progress.set(end);
+
+    let filter_value = current_filter_clone.borrow().clone();
+    apply_emoji_filter(&entries_clone, &filter_value, &flow_box_clone);
+
+        if end >= dataset.len() {
+            gtk::glib::ControlFlow::Break
+        } else {
+            gtk::glib::ControlFlow::Continue
+        }
+    });
 }
 
 fn build_ui(app: &Application) {
@@ -383,6 +456,40 @@ fn build_ui(app: &Application) {
     let items_box = gtk::Box::new(gtk::Orientation::Vertical, 5);
     items_box.add_css_class("items-box");
 
+    let emoji_flow_box = gtk::FlowBox::new();
+    emoji_flow_box.set_hexpand(false);
+    emoji_flow_box.set_valign(gtk::Align::Start);
+    emoji_flow_box.set_vexpand(true);
+    emoji_flow_box.set_max_children_per_line(8);
+    emoji_flow_box.set_min_children_per_line(4);
+    emoji_flow_box.set_selection_mode(gtk::SelectionMode::None);
+    emoji_flow_box.set_homogeneous(true);
+    emoji_flow_box.set_row_spacing(1);
+    emoji_flow_box.set_column_spacing(1);
+
+    let emoji_entries = Rc::new(RefCell::new(Vec::<EmojiEntry>::new()));
+    let emojis_initialized = Rc::new(Cell::new(false));
+    let emoji_dataset = Rc::new(build_emoji_dataset());
+    let emoji_filter_text = Rc::new(RefCell::new(String::new()));
+
+    {
+        let entries_for_filter = emoji_entries.clone();
+        emoji_flow_box.set_filter_func(move |child| {
+            if let Some(widget) = child.child() {
+                if let Ok(button) = widget.downcast::<gtk::Button>() {
+                    if let Ok(entries) = entries_for_filter.try_borrow() {
+                        for entry in entries.iter() {
+                            if entry.button == button {
+                                return entry.matches.get();
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        });
+    }
+
     scrolled_window.set_child(Some(&items_box));
     main_box.append(&scrolled_window);
     window.set_child(Some(&main_box));
@@ -412,26 +519,48 @@ fn build_ui(app: &Application) {
     let clipboard_tab_emoji = clipboard_tab.clone();
     let search_entry_emoji = search_entry.clone();
     let clear_all_emoji = clear_all_btn.clone();
+    let emoji_flow_box_tab = emoji_flow_box.clone();
+    let emoji_entries_emoji = emoji_entries.clone();
+    let emojis_initialized_emoji = emojis_initialized.clone();
+    let emoji_dataset_emoji = emoji_dataset.clone();
+    let emoji_filter_text_emoji = emoji_filter_text.clone();
     emoji_tab.connect_clicked(move |btn| {
         btn.add_css_class("active-tab");
         clipboard_tab_emoji.remove_css_class("active-tab");
         search_entry_emoji.set_visible(true);
         clear_all_emoji.set_visible(false);
-        show_emojis(&items_box_emoji, &window_emoji, clipboard_emoji.clone(), None);
+        let current_search = search_entry_emoji.text().to_string();
+        let filter_owned = if current_search.trim().is_empty() {
+            None
+        } else {
+            Some(current_search.to_lowercase())
+        };
+
+        show_emojis(
+            &items_box_emoji,
+            &window_emoji,
+            clipboard_emoji.clone(),
+            filter_owned.as_deref(),
+            &emoji_flow_box_tab,
+            emoji_entries_emoji.clone(),
+            emojis_initialized_emoji.clone(),
+            emoji_dataset_emoji.clone(),
+            emoji_filter_text_emoji.clone(),
+        );
     });
 
     // Emoji search
-    let items_box_search = items_box.clone();
-    let window_search = window.clone();
-    let clipboard_search = persistent_clipboard.clone();
+    let emoji_entries_search = emoji_entries.clone();
+    let emojis_initialized_search = emojis_initialized.clone();
+    let emoji_filter_text_search = emoji_filter_text.clone();
+    let emoji_flow_box_search = emoji_flow_box.clone();
     search_entry.connect_changed(move |entry| {
         let search_text = entry.text().to_string().to_lowercase();
-        let filter = if search_text.is_empty() {
-            None
-        } else {
-            Some(search_text)
-        };
-        show_emojis(&items_box_search, &window_search, clipboard_search.clone(), filter.as_deref());
+        *emoji_filter_text_search.borrow_mut() = search_text;
+        if emojis_initialized_search.get() {
+            let filter_value = emoji_filter_text_search.borrow().clone();
+            apply_emoji_filter(&emoji_entries_search, &filter_value, &emoji_flow_box_search);
+        }
     });
 
     // Clear All button handler
@@ -456,8 +585,8 @@ fn build_ui(app: &Application) {
             return;
         }
 
-    let original_spacing = items_box_clear.spacing();
-    items_box_clear.set_spacing(0);
+        let original_spacing = items_box_clear.spacing();
+        items_box_clear.set_spacing(0);
 
         for (idx, revealer) in revealers.iter().enumerate() {
             let revealer_clone = revealer.clone();
