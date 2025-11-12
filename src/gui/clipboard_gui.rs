@@ -90,28 +90,6 @@ fn refresh_items(
     let fetched_history = fetch_history();
     let clipboard_items = fetched_history.get_items();
 
-    // Show empty state if no items
-    if clipboard_items.is_empty() {
-        let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        empty_box.set_valign(gtk::Align::Center);
-        empty_box.set_vexpand(true);
-        empty_box.set_halign(gtk::Align::Center);
-        empty_box.set_hexpand(true);
-        empty_box.set_margin_top(-9);
-
-        let empty_title = gtk::Label::new(Some("Clipboard is empty"));
-        empty_title.add_css_class("empty-title");
-        
-        let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
-        empty_subtitle.add_css_class("empty-subtitle");
-
-        empty_box.append(&empty_title);
-        empty_box.append(&empty_subtitle);
-        
-        items_box.append(&empty_box);
-        return;
-    }
-
     // Rebuild items
     for (_, item) in clipboard_items.iter().enumerate() {
         let item_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -180,8 +158,6 @@ fn refresh_items(
         // Delete button click handler
         let items_box_clone = items_box.clone();
         let item_box_to_remove = item_box.clone();
-        let window_for_delete = window.clone();
-        let clipboard_for_delete = persistent_clipboard.clone();
         delete_btn.connect_clicked(move |_| {
             // Calculate current index dynamically by finding position in parent
             let current_index = (0..items_box_clone.observe_children().n_items())
@@ -193,23 +169,8 @@ fn refresh_items(
                 })
                 .unwrap_or(0);
             
-            // Trigger delete animation
-            item_box_to_remove.add_css_class("deleting");
-            
-            // Remove from GUI after animation completes
-            let items_box_remove = items_box_clone.clone();
-            let item_to_remove = item_box_to_remove.clone();
-            let window_check = window_for_delete.clone();
-            let clipboard_check = clipboard_for_delete.clone();
-            
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
-                items_box_remove.remove(&item_to_remove);
-                
-                // Check if empty and show empty state
-                if items_box_remove.first_child().is_none() {
-                    refresh_items(&items_box_remove, &window_check, clipboard_check);
-                }
-            });
+            // Instantly remove from GUI
+            items_box_clone.remove(&item_box_to_remove);
             
             // Send delete command in background thread with current index
             std::thread::spawn(move || {
@@ -246,11 +207,8 @@ fn show_emojis(
     flow_box.set_row_spacing(1);
     flow_box.set_column_spacing(1);
 
-    items_box.append(&flow_box);
-
     // Filter emojis based on search
-    // 🧑‍🩰 sucks. It takes TWO spaces worth. So, I removed it.
-    let emoji_list: Vec<String> = if let Some(filter) = search_filter {
+    let emoji_iter: Vec<&emojis::Emoji> = if let Some(filter) = search_filter {
         let filter_lower = filter.to_lowercase();
         emojis::iter()
             .filter(|e| {
@@ -261,71 +219,46 @@ fn show_emojis(
                 e.name().to_lowercase().contains(&filter_lower) ||
                 e.shortcode().map(|s| s.to_lowercase().contains(&filter_lower)).unwrap_or(false)
             })
-            .map(|e| e.as_str().to_string())
             .collect()
     } else {
         emojis::iter()
             .filter(|e| e.as_str() != "🧑‍🩰") // Filter out problematic multi-width emoji
-            .map(|e| e.as_str().to_string())
             .collect()
     };
 
-    // Add emojis progressively in batches
-    let flow_box_clone = flow_box.clone();
-    let window_clone = window.clone();
-    let clipboard_clone = persistent_clipboard.clone();
-    
-    gtk::glib::idle_add_local(move || {
-        const BATCH_SIZE: usize = 50;
-        static mut INDEX: usize = 0;
+    for emoji in emoji_iter {
+        // let emoji = emoji_iter[0];
+        let emoji_btn = gtk::Button::new();
+        emoji_btn.set_label(emoji.as_str());
+        emoji_btn.add_css_class("emoji-btn");
         
-        unsafe {
-            let start = INDEX;
-            let end = (INDEX + BATCH_SIZE).min(emoji_list.len());
-            
-            for i in start..end {
-                let emoji_str = emoji_list[i].clone();
-                let emoji_btn = gtk::Button::new();
-                emoji_btn.set_label(&emoji_str);
-                emoji_btn.add_css_class("emoji-btn");
-                
-                let emoji_str_clone = emoji_str.clone();
-                let window_inner = window_clone.clone();
-                let clipboard_inner = clipboard_clone.clone();
-                
-                emoji_btn.connect_clicked(move |_| {
-                    // Copy emoji to clipboard
-                    if let Ok(mut clipboard) = clipboard_inner.lock() {
-                        let _ = clipboard.set_text(&emoji_str_clone);
-                    }
-                    
-                    // Delete first clipboard item (position 0) so emoji isn't stored
-                    std::thread::spawn(|| {
-                        std::thread::sleep(Duration::from_millis(120));
-                        send_command(CmdIPC::Delete(0));
-                    });
-                    
-                    // Create flag file to signal paste should happen
-                    let _ = fs::write(SHOULD_PASTE_FLAG, "1");
-                    
-                    // Close window
-                    window_inner.close();
-                });
-                
-                flow_box_clone.insert(&emoji_btn, -1);
+        let emoji_str = emoji.as_str().to_string();
+        let window_clone = window.clone();
+        let clipboard_clone = persistent_clipboard.clone();
+        
+        emoji_btn.connect_clicked(move |_| {
+            // Copy emoji to clipboard
+            if let Ok(mut clipboard) = clipboard_clone.lock() {
+                let _ = clipboard.set_text(&emoji_str);
             }
             
-            INDEX = end;
+            // Delete first clipboard item (position 0) so emoji isn't stored
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(120)); // <- Wait for the emoji to be picked up by the daemon
+                send_command(CmdIPC::Delete(0));
+            });
             
-            // Continue if there are more emojis, otherwise stop
-            if INDEX < emoji_list.len() {
-                gtk::glib::ControlFlow::Continue
-            } else {
-                INDEX = 0; // Reset for next time
-                gtk::glib::ControlFlow::Break
-            }
-        }
-    });
+            // Create flag file to signal paste should happen
+            let _ = fs::write(SHOULD_PASTE_FLAG, "1");
+            
+            // Close window
+            window_clone.close();
+        });
+        
+        flow_box.insert(&emoji_btn, -1);
+    }
+    
+    items_box.append(&flow_box);
 }
 
 fn build_ui(app: &Application) {
