@@ -31,6 +31,23 @@ use std::{
 const APP_ID: &str = "com.ecstra.super_v";
 pub const SHOULD_PASTE_FLAG: &str = "/tmp/super_v_should_paste";
 
+fn append_empty_state(items_box: &gtk::Box) {
+    let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    empty_box.set_valign(gtk::Align::Center);
+    empty_box.set_vexpand(true);
+    empty_box.set_margin_top(-10);
+
+    let empty_title = gtk::Label::new(Some("Clipboard empty"));
+    empty_title.add_css_class("empty-title");
+
+    let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
+    empty_subtitle.add_css_class("empty-subtitle");
+
+    empty_box.append(&empty_title);
+    empty_box.append(&empty_subtitle);
+    items_box.append(&empty_box);
+}
+
 pub fn run_gui() {
     let app = Application::builder()
         .application_id(APP_ID)
@@ -92,25 +109,17 @@ fn refresh_items(
 
     // Show empty state if no items
     if clipboard_items.is_empty() {
-        let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        empty_box.set_valign(gtk::Align::Center);
-        empty_box.set_vexpand(true);
-        empty_box.set_margin_top(-10);
-        
-        let empty_title = gtk::Label::new(Some("Clipboard empty"));
-        empty_title.add_css_class("empty-title");
-        
-        let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
-        empty_subtitle.add_css_class("empty-subtitle");
-        
-        empty_box.append(&empty_title);
-        empty_box.append(&empty_subtitle);
-        items_box.append(&empty_box);
+        append_empty_state(items_box);
         return;
     }
 
     // Rebuild items
     for (_, item) in clipboard_items.iter().enumerate() {
+        let revealer = gtk::Revealer::new();
+        revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
+        revealer.set_transition_duration(220);
+        revealer.set_reveal_child(true);
+
         let item_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         item_box.add_css_class("clipboard-item");
 
@@ -176,49 +185,42 @@ fn refresh_items(
 
         // Delete button click handler
         let items_box_clone = items_box.clone();
-        let item_box_to_remove = item_box.clone();
+        let item_revealer = revealer.clone();
 
         delete_btn.connect_clicked(move |_| {
-            // Calculate current index dynamically by finding position in parent
             let current_index = (0..items_box_clone.observe_children().n_items())
                 .find(|&i| {
-                    items_box_clone.observe_children()
+                    items_box_clone
+                        .observe_children()
                         .item(i)
-                        .and_then(|obj| obj.downcast::<gtk::Box>().ok())
-                        .as_ref() == Some(&item_box_to_remove)
+                        .and_then(|obj| obj.downcast::<gtk::Revealer>().ok())
+                        .as_ref() == Some(&item_revealer)
                 })
                 .unwrap_or(0);
-            
-            // Instantly remove from GUI
-            items_box_clone.remove(&item_box_to_remove);
-            
-            // Check if items_box is now empty and show empty state
-            if items_box_clone.first_child().is_none() {
-                let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-                empty_box.set_valign(gtk::Align::Center);
-                empty_box.set_vexpand(true);
-                empty_box.set_margin_top(-10);
-                
-                let empty_title = gtk::Label::new(Some("Clipboard empty"));
-                empty_title.add_css_class("empty-title");
-                
-                let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
-                empty_subtitle.add_css_class("empty-subtitle");
-                
-                empty_box.append(&empty_title);
-                empty_box.append(&empty_subtitle);
-                items_box_clone.append(&empty_box);
-            }
-            
-            // Send delete command in background thread with current index
-            std::thread::spawn(move || {
-                send_command(CmdIPC::Delete(current_index as usize));
+
+            item_revealer.set_reveal_child(false);
+
+            let items_box_for_removal = items_box_clone.clone();
+            let revealer_for_removal = item_revealer.clone();
+
+            gtk::glib::timeout_add_local_once(Duration::from_millis(220), move || {
+                items_box_for_removal.remove(&revealer_for_removal);
+
+                if items_box_for_removal.first_child().is_none() {
+                    append_empty_state(&items_box_for_removal);
+                }
+
+                std::thread::spawn(move || {
+                    send_command(CmdIPC::Delete(current_index as usize));
+                });
             });
         });
 
         item_box.append(&content_box);
         item_box.append(&delete_btn);
-        items_box.append(&item_box);
+
+        revealer.set_child(Some(&item_box));
+        items_box.append(&revealer);
     }
 }
 
