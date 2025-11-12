@@ -126,6 +126,17 @@ button.delete-btn:hover {
     background: rgba(250, 250, 250, 0.09);
 }
 
+.empty-title {
+    font-size: 16px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.empty-subtitle {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.4);
+}
+
 .emoji-btn {
     background: transparent;
     border: none;

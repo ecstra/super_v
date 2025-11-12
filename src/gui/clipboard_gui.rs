@@ -90,6 +90,28 @@ fn refresh_items(
     let fetched_history = fetch_history();
     let clipboard_items = fetched_history.get_items();
 
+    // Show empty state if no items
+    if clipboard_items.is_empty() {
+        let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        empty_box.set_valign(gtk::Align::Center);
+        empty_box.set_vexpand(true);
+        empty_box.set_halign(gtk::Align::Center);
+        empty_box.set_hexpand(true);
+        empty_box.set_margin_top(-9);
+
+        let empty_title = gtk::Label::new(Some("Clipboard is empty"));
+        empty_title.add_css_class("empty-title");
+        
+        let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
+        empty_subtitle.add_css_class("empty-subtitle");
+
+        empty_box.append(&empty_title);
+        empty_box.append(&empty_subtitle);
+        
+        items_box.append(&empty_box);
+        return;
+    }
+
     // Rebuild items
     for (_, item) in clipboard_items.iter().enumerate() {
         let item_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -158,6 +180,8 @@ fn refresh_items(
         // Delete button click handler
         let items_box_clone = items_box.clone();
         let item_box_to_remove = item_box.clone();
+        let window_for_delete = window.clone();
+        let clipboard_for_delete = persistent_clipboard.clone();
         delete_btn.connect_clicked(move |_| {
             // Calculate current index dynamically by finding position in parent
             let current_index = (0..items_box_clone.observe_children().n_items())
@@ -171,6 +195,16 @@ fn refresh_items(
             
             // Instantly remove from GUI
             items_box_clone.remove(&item_box_to_remove);
+            
+            // Schedule empty state check after removal completes
+            let items_box_check = items_box_clone.clone();
+            let window_check = window_for_delete.clone();
+            let clipboard_check = clipboard_for_delete.clone();
+            gtk::glib::idle_add_local_once(move || {
+                if items_box_check.first_child().is_none() {
+                    refresh_items(&items_box_check, &window_check, clipboard_check);
+                }
+            });
             
             // Send delete command in background thread with current index
             std::thread::spawn(move || {
@@ -210,6 +244,7 @@ fn show_emojis(
     items_box.append(&flow_box);
 
     // Filter emojis based on search
+    // 🧑‍🩰 sucks. It takes TWO spaces worth. So, I removed it.
     let emoji_list: Vec<String> = if let Some(filter) = search_filter {
         let filter_lower = filter.to_lowercase();
         emojis::iter()
