@@ -212,18 +212,23 @@ fn show_emojis(
         let filter_lower = filter.to_lowercase();
         emojis::iter()
             .filter(|e| {
+                // Filter out problematic multi-width emoji
+                if e.as_str() == "🧑‍🩰" {
+                    return false;
+                }
                 e.name().to_lowercase().contains(&filter_lower) ||
                 e.shortcode().map(|s| s.to_lowercase().contains(&filter_lower)).unwrap_or(false)
             })
             .collect()
     } else {
-        emojis::iter().collect() // Show all emojis
+        emojis::iter()
+            .filter(|e| e.as_str() != "🧑‍🩰") // Filter out problematic multi-width emoji
+            .collect()
     };
 
     for emoji in emoji_iter {
         let emoji_btn = gtk::Button::new();
         emoji_btn.set_label(emoji.as_str());
-        emoji_btn.set_size_request(36, 36);
         emoji_btn.add_css_class("emoji-btn");
         
         let emoji_str = emoji.as_str().to_string();
