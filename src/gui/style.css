@@ -156,3 +156,14 @@ button.delete-btn:hover {
     border: 1px solid rgba(100, 150, 255, 0.8);
     background: rgba(40, 40, 50, 0.4);
 }
+
+.empty-title {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 16px;
+    font-weight: 500;
+}
+
+.empty-subtitle {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 13px;
+}

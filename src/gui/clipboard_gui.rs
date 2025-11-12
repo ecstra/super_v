@@ -90,6 +90,25 @@ fn refresh_items(
     let fetched_history = fetch_history();
     let clipboard_items = fetched_history.get_items();
 
+    // Show empty state if no items
+    if clipboard_items.is_empty() {
+        let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        empty_box.set_valign(gtk::Align::Center);
+        empty_box.set_vexpand(true);
+        empty_box.set_margin_top(-10);
+        
+        let empty_title = gtk::Label::new(Some("Clipboard empty"));
+        empty_title.add_css_class("empty-title");
+        
+        let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
+        empty_subtitle.add_css_class("empty-subtitle");
+        
+        empty_box.append(&empty_title);
+        empty_box.append(&empty_subtitle);
+        items_box.append(&empty_box);
+        return;
+    }
+
     // Rebuild items
     for (_, item) in clipboard_items.iter().enumerate() {
         let item_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -158,6 +177,7 @@ fn refresh_items(
         // Delete button click handler
         let items_box_clone = items_box.clone();
         let item_box_to_remove = item_box.clone();
+
         delete_btn.connect_clicked(move |_| {
             // Calculate current index dynamically by finding position in parent
             let current_index = (0..items_box_clone.observe_children().n_items())
@@ -172,6 +192,24 @@ fn refresh_items(
             // Instantly remove from GUI
             items_box_clone.remove(&item_box_to_remove);
             
+            // Check if items_box is now empty and show empty state
+            if items_box_clone.first_child().is_none() {
+                let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+                empty_box.set_valign(gtk::Align::Center);
+                empty_box.set_vexpand(true);
+                empty_box.set_margin_top(-10);
+                
+                let empty_title = gtk::Label::new(Some("Clipboard empty"));
+                empty_title.add_css_class("empty-title");
+                
+                let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
+                empty_subtitle.add_css_class("empty-subtitle");
+                
+                empty_box.append(&empty_title);
+                empty_box.append(&empty_subtitle);
+                items_box_clone.append(&empty_box);
+            }
+            
             // Send delete command in background thread with current index
             std::thread::spawn(move || {
                 send_command(CmdIPC::Delete(current_index as usize));
@@ -180,7 +218,6 @@ fn refresh_items(
 
         item_box.append(&content_box);
         item_box.append(&delete_btn);
-
         items_box.append(&item_box);
     }
 }
