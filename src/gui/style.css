@@ -98,6 +98,11 @@ scrollbar slider:hover {
     color: rgba(255, 255, 255, 1);
 }
 
+.image-preview {
+    border-radius: 6px;
+}
+
+
 .delete-btn {
     background-color: transparent;
     background-image: none;

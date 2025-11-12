@@ -275,4 +275,4 @@ Contributions are appreciated. You can help improve Super V in many ways:
 * Keep commits atomic and clear.
 * Document new functions or modules.
 * Ensure the binary builds in release mode (`cargo build --release`).
-* Avoid adding unnecessary dependencies.
+* Avoid adding unnecessary dependencies
