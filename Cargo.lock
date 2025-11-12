@@ -1384,6 +1384,7 @@ dependencies = [
  "ctrlc",
  "emojis",
  "fs2",
+ "gdk-pixbuf",
  "gtk4",
  "rdev",
  "rmp-serde",

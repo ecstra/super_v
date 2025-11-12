@@ -26,6 +26,7 @@ use std::{
         Mutex
     }, time::Duration
 };
+use gdk_pixbuf::{InterpType, Pixbuf};
 
 const APP_ID: &str = "com.ecstra.super_v";
 pub const SHOULD_PASTE_FLAG: &str = "/tmp/super_v_should_paste";
@@ -42,9 +43,10 @@ struct EmojiMeta {
     search_text: String,
 }
 
-type ImagePreviewCache = Rc<RefCell<HashMap<u64, gtk::gdk::MemoryTexture>>>;
+type ImagePreviewCache = Rc<RefCell<HashMap<u64, gtk::gdk::Texture>>>;
 
-const IMAGE_PREVIEW_MAX_SIZE: usize = 50;
+const IMAGE_PREVIEW_TEXTURE_MAX_SIZE: usize = 200;
+const IMAGE_PREVIEW_DISPLAY_SIZE: i32 = 50;
 
 fn build_emoji_dataset() -> Vec<EmojiMeta> {
     emojis::iter()
@@ -68,53 +70,6 @@ fn build_emoji_dataset() -> Vec<EmojiMeta> {
         .collect()
 }
 
-fn scale_rgba_to_fit(
-    width: usize,
-    height: usize,
-    bytes: &[u8],
-    max_dim: usize,
-) -> Option<(usize, usize, Vec<u8>)> {
-    if width == 0 || height == 0 || max_dim == 0 {
-        return None;
-    }
-
-    let stride = width.checked_mul(4)?;
-    let expected_len = stride.checked_mul(height)?;
-    if bytes.len() < expected_len {
-        return None;
-    }
-
-    let max_src_dim = width.max(height) as f32;
-    if max_src_dim == 0.0 {
-        return None;
-    }
-
-    let scale = if max_src_dim <= max_dim as f32 {
-        1.0
-    } else {
-        max_dim as f32 / max_src_dim
-    };
-
-    let target_width = ((width as f32 * scale).round() as usize).max(1);
-    let target_height = ((height as f32 * scale).round() as usize).max(1);
-
-    let mut scaled = vec![0u8; target_width.checked_mul(target_height)?.checked_mul(4)?];
-
-    for ty in 0..target_height {
-        let src_y = ty * height / target_height;
-        let src_row_start = src_y.checked_mul(width)?.checked_mul(4)?;
-        for tx in 0..target_width {
-            let src_x = tx * width / target_width;
-            let src_idx = src_row_start + src_x.checked_mul(4)?;
-            let dst_idx = (ty * target_width + tx) * 4;
-            scaled[dst_idx..dst_idx + 4]
-                .copy_from_slice(&bytes[src_idx..src_idx + 4]);
-        }
-    }
-
-    Some((target_width, target_height, scaled))
-}
-
 fn build_image_preview(
     width: usize,
     height: usize,
@@ -131,25 +86,41 @@ fn build_image_preview(
         let picture = gtk::Picture::for_paintable(texture);
         picture.set_can_shrink(true);
         picture.set_keep_aspect_ratio(true);
-        let max_size = IMAGE_PREVIEW_MAX_SIZE as i32;
-        picture.set_size_request(max_size, max_size);
+        picture.set_size_request(IMAGE_PREVIEW_DISPLAY_SIZE, IMAGE_PREVIEW_DISPLAY_SIZE);
         picture.set_halign(gtk::Align::Start);
         picture.add_css_class("image-preview");
         return Some(picture);
     }
 
-    let (target_width, target_height, scaled) =
-        scale_rgba_to_fit(width, height, bytes, IMAGE_PREVIEW_MAX_SIZE)?;
+    let stride = width.checked_mul(4)?;
+    let expected_len = stride.checked_mul(height)?;
+    if bytes.len() < expected_len {
+        return None;
+    }
 
-    let stride = target_width.checked_mul(4)?;
-    let bytes_owned = gtk::glib::Bytes::from_owned(scaled);
-    let texture = gtk::gdk::MemoryTexture::new(
-        target_width as i32,
-        target_height as i32,
-        gtk::gdk::MemoryFormat::R8g8b8a8,
+    let bytes_owned = gtk::glib::Bytes::from_owned(bytes[..expected_len].to_vec());
+    let mut pixbuf = Pixbuf::from_bytes(
         &bytes_owned,
-        stride,
+        gdk_pixbuf::Colorspace::Rgb,
+        true,
+        8,
+        width as i32,
+        height as i32,
+        stride as i32,
     );
+
+    let max_dim = width.max(height) as f32;
+    if max_dim > IMAGE_PREVIEW_TEXTURE_MAX_SIZE as f32 {
+        let scale = IMAGE_PREVIEW_TEXTURE_MAX_SIZE as f32 / max_dim;
+        let target_width = (width as f32 * scale).round().max(1.0) as i32;
+        let target_height = (height as f32 * scale).round().max(1.0) as i32;
+        if let Some(resized) = pixbuf.scale_simple(target_width, target_height, InterpType::Hyper)
+        {
+            pixbuf = resized;
+        }
+    }
+
+    let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
 
     {
         let mut cache_ref = cache.borrow_mut();
@@ -159,8 +130,7 @@ fn build_image_preview(
     let picture = gtk::Picture::for_paintable(&texture);
     picture.set_can_shrink(true);
     picture.set_keep_aspect_ratio(true);
-    let max_size = IMAGE_PREVIEW_MAX_SIZE as i32;
-    picture.set_size_request(max_size, max_size);
+    picture.set_size_request(IMAGE_PREVIEW_DISPLAY_SIZE, IMAGE_PREVIEW_DISPLAY_SIZE);
     picture.set_halign(gtk::Align::Start);
     picture.add_css_class("image-preview");
     Some(picture)
