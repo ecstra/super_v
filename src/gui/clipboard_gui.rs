@@ -439,8 +439,63 @@ fn build_ui(app: &Application) {
     let window_clear = window.clone();
     let clipboard_clear = persistent_clipboard.clone();
     clear_all_btn.connect_clicked(move |_| {
-        send_command(CmdIPC::Clear);
-        refresh_items(&items_box_clear, &window_clear, clipboard_clear.clone());
+        let observer = items_box_clear.observe_children();
+        let mut revealers: Vec<gtk::Revealer> = Vec::new();
+
+        for idx in 0..observer.n_items() {
+            if let Some(obj) = observer.item(idx).and_then(|o| o.downcast::<gtk::Revealer>().ok()) {
+                revealers.push(obj);
+            }
+        }
+
+        if revealers.is_empty() {
+            std::thread::spawn(|| {
+                send_command(CmdIPC::Clear);
+            });
+            refresh_items(&items_box_clear, &window_clear, clipboard_clear.clone());
+            return;
+        }
+
+    let original_spacing = items_box_clear.spacing();
+    items_box_clear.set_spacing(0);
+
+        for (idx, revealer) in revealers.iter().enumerate() {
+            let revealer_clone = revealer.clone();
+            let delay = (idx as u64) * 16;
+            gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
+                revealer_clone.set_reveal_child(false);
+            });
+        }
+
+        let total_delay = 240 + (revealers.len() as u64 * 16);
+        let items_box_after = items_box_clear.clone();
+        let window_after = window_clear.clone();
+        let clipboard_after = clipboard_clear.clone();
+        let spacing_restore = original_spacing;
+
+        gtk::glib::timeout_add_local_once(Duration::from_millis(total_delay), move || {
+            while let Some(child) = items_box_after.first_child() {
+                items_box_after.remove(&child);
+            }
+
+            items_box_after.set_spacing(spacing_restore);
+
+            std::thread::spawn(|| {
+                send_command(CmdIPC::Clear);
+            });
+
+            append_empty_state(&items_box_after);
+
+            let items_box_refresh = items_box_after.clone();
+            let window_refresh = window_after.clone();
+            let clipboard_refresh = clipboard_after.clone();
+            let spacing_refresh = spacing_restore;
+
+            gtk::glib::timeout_add_local_once(Duration::from_millis(60), move || {
+                items_box_refresh.set_spacing(spacing_refresh);
+                refresh_items(&items_box_refresh, &window_refresh, clipboard_refresh.clone());
+            });
+        });
     });
 
     // ---------------------- Quit Events ------------------------
