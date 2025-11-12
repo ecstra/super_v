@@ -1,284 +1,106 @@
+// Standard Crates
+use std::{
+    fs,
+    thread,
+    process, 
+    time::Duration,
+    path::Path
+};
+
+// External Crates
+use clap::{
+    Parser,
+    Subcommand
+};
+
+// My Crates
 use super_v::{
-    history::ClipboardHistory,
-    common::ClipboardItem,
-    services::clipboard_ipc_server::{
-        CmdIPC,
-        IPCRequest,
-        Payload,
-        create_default_stream,
-        read_payload,
-        send_payload
+    common::{
+        LOCK_PATH, 
+        SOCKET_PATH
+    }, 
+    gui::clipboard_gui::{SHOULD_PASTE_FLAG, run_gui},
+    services::{
+        clipboard_manager::Manager, 
+        ydotol::send_shift_insert
     }
 };
 
-use gtk4::{
-    self as gtk,
-    Application,
-    prelude::*,
-    gdk::Key
-};
-use arboard::Clipboard;
-use std::sync::{Arc, Mutex};
+/*
+Notes:
+- Add tests
+- STOP USING UNWRAP -> Look what you did -.- Now clean the unwraps and replace with proper error handling and eprintln!()...
+- Threaded Clipboard Manager that has a polling mechanism and manages history.
+- Keyboard simulation using rdev (to paste when item is clicked)
+- Mouse pointer monitoring to open the window at cursor location
+- Emoji screen
+*/
 
-const APP_ID: &str = "com.ecstra.super_v";
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Start the process
+    Start,
 
+    /// Open the GUI
+    OpenGui,
+
+    /// Cleans any leftovers
+    Clean
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "super_v",
+    version = "0.0.1",
+    about = "Clipboard Service that looks like Win11",
+    long_about = None
+)]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+
+fn start_manager_daemon() {
+    let mut c_manager = match Manager::new() {
+        Ok(manager) => {
+            println!("Starting service...");
+            manager
+        },
+        Err(_) => {
+            eprintln!("Another instance of Manager already running.");
+            process::exit(0);
+        },
+    };
+
+    c_manager.start_daemon();
+}
+
+// ----------------------------- Main --------------------------------
 fn main() {
-    let app = Application::builder()
-        .application_id(APP_ID)
-        .build();
-
-    app.connect_activate(build_ui);
-    app.run();
-}
-
-fn fetch_history() -> ClipboardHistory {
-    let new_clipboard = ClipboardHistory::new(25);
-
-    match create_default_stream() {
-        Ok(mut stream) => {
-            send_payload(&mut stream, Payload::Request(IPCRequest {
-                cmd: CmdIPC::Snapshot
-            }));
+    // Daemon
+    let args= Args::parse();
+    match args.command {
+        Command::Start => {
+            start_manager_daemon();
+        },
+        Command::OpenGui => {
+            // Remove flag if it exists from previous run
+            let _ = fs::remove_file(SHOULD_PASTE_FLAG);
             
-            let received_payload = read_payload(&mut stream);
-            match received_payload {
-                Payload::Response(ipc_resp) => {
-                    ipc_resp.history_snapshot.unwrap_or_else(|| new_clipboard)
-                }
-                _ => new_clipboard
+            run_gui();
+            
+            // Check if flag file exists (item was clicked)
+            if Path::new(SHOULD_PASTE_FLAG).exists() {
+                thread::sleep(Duration::from_millis(100));
+                send_shift_insert();
+                // Clean up flag
+                let _ = fs::remove_file(SHOULD_PASTE_FLAG);
             }
+        },
+        Command::Clean => {
+            let _ = fs::remove_file(SOCKET_PATH);
+            let _ = fs::remove_file(LOCK_PATH);
         }
-        Err(_) => new_clipboard
     }
 }
-
-fn send_command(cmd: CmdIPC) -> Option<ClipboardHistory> {
-    match create_default_stream() {
-        Ok(mut stream) => {
-            send_payload(&mut stream, Payload::Request(IPCRequest { cmd }));
-            
-            let received_payload = read_payload(&mut stream);
-            if let Payload::Response(ipc_resp) = received_payload {
-                return ipc_resp.history_snapshot;
-            }
-            None
-        }
-        Err(_) => None,
-    }
-}
-
-fn refresh_items(items_box: &gtk::Box, window: &gtk::ApplicationWindow, persistent_clipboard: Arc<Mutex<Clipboard>>) {
-    // Clear all existing items
-    while let Some(child) = items_box.first_child() {
-        items_box.remove(&child);
-    }
-
-    // Fetch fresh history
-    let fetched_history = fetch_history();
-    let clipboard_items = fetched_history.get_items();
-
-    // Rebuild items
-    for (_, item) in clipboard_items.iter().enumerate() {
-        let item_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        item_box.add_css_class("clipboard-item");
-
-        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        content_box.set_hexpand(true);
-
-        let content_preview = match item {
-            ClipboardItem::Text(text) => {
-                if text.len() > 60 {
-                    format!("{}...", &text[..60])
-                } else {
-                    text.clone()
-                }
-            }
-            ClipboardItem::Image { width, height, .. } => {
-                format!("{}x{}", width, height)
-            }
-        };
-
-        let content_label = gtk::Label::new(Some(&content_preview));
-        content_label.set_valign(gtk::Align::Center);
-        content_label.add_css_class("content-label");
-        content_label.set_xalign(0.0);
-        content_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        content_label.set_max_width_chars(40);
-
-        content_box.append(&content_label);
-
-        // Make the item clickable
-        let gesture = gtk::GestureClick::new();
-        let window_clone = window.clone();
-        let item_clone = item.clone();
-        let clipboard_arc = persistent_clipboard.clone();
-        
-        gesture.connect_released(move |_, _, _, _| {
-            // Copy to clipboard - server will auto-promote it
-            let item_for_thread = item_clone.clone();
-            let clipboard_for_thread = clipboard_arc.clone();
-            
-            if let ClipboardItem::Text(text) = &item_for_thread {
-                if let Ok(mut clipboard) = clipboard_for_thread.lock() {
-                    if !text.trim().is_empty() {
-                        let _ = clipboard.set_text(text);
-                    }
-                }
-            }
-            
-            // Close window immediately
-            window_clone.close();
-        });
-        
-        item_box.add_controller(gesture);
-
-        // Delete button with trash icon
-        let delete_btn = gtk::Button::new();
-        delete_btn.set_icon_name("user-trash-symbolic");
-        delete_btn.add_css_class("delete-btn");
-        delete_btn.set_valign(gtk::Align::Start);
-
-        // Delete button click handler
-        let items_box_clone = items_box.clone();
-        let item_box_to_remove = item_box.clone();
-        delete_btn.connect_clicked(move |_| {
-            // Calculate current index dynamically by finding position in parent
-            let current_index = (0..items_box_clone.observe_children().n_items())
-                .find(|&i| {
-                    items_box_clone.observe_children()
-                        .item(i)
-                        .and_then(|obj| obj.downcast::<gtk::Box>().ok())
-                        .as_ref() == Some(&item_box_to_remove)
-                })
-                .unwrap_or(0);
-            
-            // Instantly remove from GUI
-            items_box_clone.remove(&item_box_to_remove);
-            
-            // Send delete command in background thread with current index
-            std::thread::spawn(move || {
-                send_command(CmdIPC::Delete(current_index as usize));
-            });
-        });
-
-        item_box.append(&content_box);
-        item_box.append(&delete_btn);
-
-        items_box.append(&item_box);
-    }
-}
-
-fn build_ui(app: &Application) {
-    // -------------------- Window Creation ----------------------
-    let window = gtk::ApplicationWindow::builder().build();
-    window.set_application(Some(app)); // <- Window is assigned to our main application
-    let persistent_clipboard = Arc::new(Mutex::new(Clipboard::new().unwrap()));
-    // -----------------------------------------------------------
-
-
-    // -------------------- Window Settings ----------------------
-    // Changables
-    const WIDTH      : i32    = 360;
-    const HEIGHT     : i32    = 400;
-
-    // Flags
-    const TOP_PANEL  : bool   = false;
-    const MODAL      : bool   = true;
-
-    // Apply the settings
-    window.set_default_size(WIDTH, HEIGHT);
-
-    window.set_decorated(TOP_PANEL);
-    window.set_modal(MODAL);
-    // -----------------------------------------------------------
-
-
-    // ------------------------ CSS ------------------------------
-    let css_provider = gtk::CssProvider::new();
-    css_provider.load_from_data(include_str!("gui/style.css"));
-
-    gtk::style_context_add_provider_for_display(
-        &WidgetExt::display(&window),
-        &css_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-    // -----------------------------------------------------------
-
-
-   // --------------------- Main Layout --------------------------
-    let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    main_box.add_css_class("main-box");
-
-    let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    header_box.add_css_class("header-box");
-
-    let clipboard_tab = gtk::Button::new();
-    clipboard_tab.set_icon_name("edit-paste-symbolic");
-    clipboard_tab.add_css_class("tab-button");
-    clipboard_tab.add_css_class("active-tab");
-
-    let emoji_tab = gtk::Button::new();
-    emoji_tab.set_icon_name("face-smile-symbolic");
-    emoji_tab.add_css_class("tab-button");
-
-    header_box.append(&clipboard_tab);
-    header_box.append(&emoji_tab);
-
-    let clear_all_btn = gtk::Button::new();
-    clear_all_btn.set_label("Clear All");
-    clear_all_btn.add_css_class("clear-all-btn");
-    clear_all_btn.set_hexpand(true);
-    clear_all_btn.set_halign(gtk::Align::End);
-
-    header_box.append(&clear_all_btn);
-    main_box.append(&header_box);
-
-    let scrolled_window = gtk::ScrolledWindow::new();
-    scrolled_window.add_css_class("scrollable-window");
-    scrolled_window.set_vexpand(true);
-    scrolled_window.set_hexpand(true);
-
-    let items_box = gtk::Box::new(gtk::Orientation::Vertical, 5);
-    items_box.add_css_class("items-box");
-
-    scrolled_window.set_child(Some(&items_box));
-    main_box.append(&scrolled_window);
-    window.set_child(Some(&main_box));
-    // -----------------------------------------------------------
-
-    // Initial items load
-    refresh_items(&items_box, &window, persistent_clipboard.clone());
-
-    // Clear All button handler
-    let items_box_clear = items_box.clone();
-    let window_clear = window.clone();
-    let clipboard_clear = persistent_clipboard.clone();
-    clear_all_btn.connect_clicked(move |_| {
-        send_command(CmdIPC::Clear);
-        refresh_items(&items_box_clear, &window_clear, clipboard_clear.clone());
-        window_clear.close();
-    });
-
-    // ---------------------- Quit Events ------------------------
-    let key_controller = gtk::EventControllerKey::new();
-    let window_esc = window.clone();
-
-    key_controller.connect_key_pressed(move |_, key, _, _| {
-        if key == Key::Escape {
-            window_esc.close();
-            gtk::glib::Propagation::Stop
-        } else {
-            gtk::glib::Propagation::Proceed
-        }
-    });
-    window.add_controller(key_controller);
-
-    window.connect_is_active_notify(move |window| {
-        if !window.is_active() {
-            window.close()
-        }
-    });
-    // -----------------------------------------------------------
-
-    window.present();
-}
+// -------------------------------------------------------------------

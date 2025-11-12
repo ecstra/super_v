@@ -15,14 +15,8 @@ use super_v::{
         LOCK_PATH, 
         SOCKET_PATH
     }, 
+    gui::clipboard_gui::run_gui,
     services::{
-        clipboard_ipc_server::{
-            CmdIPC, 
-            Payload, 
-            create_default_stream, 
-            read_payload, 
-            send_payload
-        }, 
         clipboard_manager::Manager
     }
 };
@@ -85,13 +79,7 @@ fn main() {
             start_manager_daemon();
         },
         Command::OpenGui => {
-            // let mut stream = create_default_stream().unwrap();
-
-            // send_payload(&mut stream, Payload::Cmd(CmdIPC::Stop));
-
-            // println!("Trying to see if there is something...");
-            // let resp = read_payload(&mut stream);
-            // println!("{:?}", resp);
+            run_gui();
         },
         Command::Clean => {
             let _ = remove_file(SOCKET_PATH);

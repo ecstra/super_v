@@ -5,6 +5,10 @@ set -euo pipefail
 cargo build --release
 strip target/release/super_v
 
+# start ydotoold
+sudo ydotoold || true
+sudo chmod 666 /tmp/.ydotool_socket
+
 # Config
 USERNAME="$(id -un)"
 USERHOME="${HOME}"

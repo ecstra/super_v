@@ -2,3 +2,4 @@
 pub mod common;
 pub mod history;
 pub mod services;
+pub mod gui;
