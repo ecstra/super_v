@@ -207,8 +207,10 @@ fn show_emojis(
     flow_box.set_row_spacing(1);
     flow_box.set_column_spacing(1);
 
+    items_box.append(&flow_box);
+
     // Filter emojis based on search
-    let emoji_iter: Vec<&emojis::Emoji> = if let Some(filter) = search_filter {
+    let emoji_list: Vec<String> = if let Some(filter) = search_filter {
         let filter_lower = filter.to_lowercase();
         emojis::iter()
             .filter(|e| {
@@ -219,45 +221,71 @@ fn show_emojis(
                 e.name().to_lowercase().contains(&filter_lower) ||
                 e.shortcode().map(|s| s.to_lowercase().contains(&filter_lower)).unwrap_or(false)
             })
+            .map(|e| e.as_str().to_string())
             .collect()
     } else {
         emojis::iter()
             .filter(|e| e.as_str() != "🧑‍🩰") // Filter out problematic multi-width emoji
+            .map(|e| e.as_str().to_string())
             .collect()
     };
 
-    for emoji in emoji_iter {
-        let emoji_btn = gtk::Button::new();
-        emoji_btn.set_label(emoji.as_str());
-        emoji_btn.add_css_class("emoji-btn");
+    // Add emojis progressively in batches
+    let flow_box_clone = flow_box.clone();
+    let window_clone = window.clone();
+    let clipboard_clone = persistent_clipboard.clone();
+    
+    gtk::glib::idle_add_local(move || {
+        const BATCH_SIZE: usize = 50;
+        static mut INDEX: usize = 0;
         
-        let emoji_str = emoji.as_str().to_string();
-        let window_clone = window.clone();
-        let clipboard_clone = persistent_clipboard.clone();
-        
-        emoji_btn.connect_clicked(move |_| {
-            // Copy emoji to clipboard
-            if let Ok(mut clipboard) = clipboard_clone.lock() {
-                let _ = clipboard.set_text(&emoji_str);
+        unsafe {
+            let start = INDEX;
+            let end = (INDEX + BATCH_SIZE).min(emoji_list.len());
+            
+            for i in start..end {
+                let emoji_str = emoji_list[i].clone();
+                let emoji_btn = gtk::Button::new();
+                emoji_btn.set_label(&emoji_str);
+                emoji_btn.add_css_class("emoji-btn");
+                
+                let emoji_str_clone = emoji_str.clone();
+                let window_inner = window_clone.clone();
+                let clipboard_inner = clipboard_clone.clone();
+                
+                emoji_btn.connect_clicked(move |_| {
+                    // Copy emoji to clipboard
+                    if let Ok(mut clipboard) = clipboard_inner.lock() {
+                        let _ = clipboard.set_text(&emoji_str_clone);
+                    }
+                    
+                    // Delete first clipboard item (position 0) so emoji isn't stored
+                    std::thread::spawn(|| {
+                        std::thread::sleep(Duration::from_millis(120));
+                        send_command(CmdIPC::Delete(0));
+                    });
+                    
+                    // Create flag file to signal paste should happen
+                    let _ = fs::write(SHOULD_PASTE_FLAG, "1");
+                    
+                    // Close window
+                    window_inner.close();
+                });
+                
+                flow_box_clone.insert(&emoji_btn, -1);
             }
             
-            // Delete first clipboard item (position 0) so emoji isn't stored
-            std::thread::spawn(|| {
-                std::thread::sleep(Duration::from_millis(120)); // <- Wait for the emoji to be picked up by the daemon
-                send_command(CmdIPC::Delete(0));
-            });
+            INDEX = end;
             
-            // Create flag file to signal paste should happen
-            let _ = fs::write(SHOULD_PASTE_FLAG, "1");
-            
-            // Close window
-            window_clone.close();
-        });
-        
-        flow_box.insert(&emoji_btn, -1);
-    }
-    
-    items_box.append(&flow_box);
+            // Continue if there are more emojis, otherwise stop
+            if INDEX < emoji_list.len() {
+                gtk::glib::ControlFlow::Continue
+            } else {
+                INDEX = 0; // Reset for next time
+                gtk::glib::ControlFlow::Break
+            }
+        }
+    });
 }
 
 fn build_ui(app: &Application) {
