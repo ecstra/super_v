@@ -16,12 +16,13 @@ use serde::{
     Serialize, 
     Deserialize
 };
-use rmp_serde::{Serializer};
+use rmp_serde::Serializer;
 
 // My Crates
 use crate::{
     common::{
-        IPCServerError,
+        ClipboardItem, 
+        IPCServerError, 
         SOCKET_PATH
     }, 
     history::ClipboardHistory
@@ -40,6 +41,7 @@ use crate::{
 pub enum CmdIPC {
     Promote(usize),
     Delete(usize),
+    DeleteThis(ClipboardItem),
     Snapshot,
     Clear,
     Stop

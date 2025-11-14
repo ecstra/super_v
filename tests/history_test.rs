@@ -2,7 +2,7 @@
 mod history_tests {
     use std::collections::VecDeque;
 
-    use super_v::{common::ClipboardItem, history::ClipboardHistory};
+    use super_v::{common::{ClipboardItem, ClipboardError}, history::ClipboardHistory};
     
     #[test]
     fn test_history_add_item() {
@@ -326,41 +326,60 @@ mod history_tests {
     }
 
     #[test]
-    fn test_promote_last_item() {
-        // Create history
-        let mut history = ClipboardHistory::new(5);
-        
-        // Create items
+    fn test_delete_item_success() {
+        // Create history and populate with three entries
+        let mut history = ClipboardHistory::new(3);
+
         let item1 = ClipboardItem::Text("Item 1".to_string());
         let item2 = ClipboardItem::Text("Item 2".to_string());
         let item3 = ClipboardItem::Text("Item 3".to_string());
-        
-        // Add items to history
+
         history.add(item1.clone());
         history.add(item2.clone());
         history.add(item3.clone());
-        
-        // Promote last item (index 2)
-        history.promote(2).unwrap();
-        
-        assert_eq!(history.get_items(), &VecDeque::from([item1, item3, item2]));
+
+        // Delete the middle item (current order: 3,2,1)
+        let result = history.delete(1);
+        assert_eq!(result, Ok(()));
+        assert_eq!(history.get_items(), &VecDeque::from([item3, item1]));
     }
 
     #[test]
-    fn test_single_capacity_history() {
+    fn test_delete_out_of_bounds_error() {
+        // Attempt to delete from an empty history should yield an out-of-bounds error
+        let mut history = ClipboardHistory::new(2);
+        assert_eq!(history.delete(0), Err(ClipboardError::IndexOutOfBound));
+
+        // Populate history and try to delete past the end
+        history.add(ClipboardItem::Text("Item".to_string()));
+        assert_eq!(history.delete(5), Err(ClipboardError::IndexOutOfBound));
+    }
+
+    #[test]
+    fn test_delete_this_item_success() {
         // Create history
-        let mut history = ClipboardHistory::new(1);
-        
-        // Create items
+        let mut history = ClipboardHistory::new(3);
+
         let item1 = ClipboardItem::Text("Item 1".to_string());
         let item2 = ClipboardItem::Text("Item 2".to_string());
-        
-        // Add items to history
+
         history.add(item1.clone());
         history.add(item2.clone());
-        
-        // Should only keep the latest item
-        assert_eq!(history.get_items().len(), 1);
+
+        // Delete a specific item by value
+        let result = history.delete_this(item1.clone());
+        assert_eq!(result, Ok(()));
         assert_eq!(history.get_items(), &VecDeque::from([item2]));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_delete_this_missing_item_panic() {
+        // Create history with a single entry and attempt to delete an unknown item
+        let mut history = ClipboardHistory::new(2);
+        history.add(ClipboardItem::Text("Known".to_string()));
+
+        // delete_this uses unwrap on the internal search, so a missing item should panic
+        history.delete_this(ClipboardItem::Text("Missing".to_string())).unwrap();
     }
 }

@@ -325,7 +325,6 @@ impl Manager {
                         thread::spawn(move || {
                             // Read the payload
                             let payload = read_payload(&mut s);
-                            
                             println!("Recieved Payload: {:?}", payload);
 
                             // Match the payload and execute command
@@ -369,6 +368,27 @@ impl Manager {
                                                 }
                                             }
                                         },
+                                        CmdIPC::DeleteThis(item) => {
+                                            // Get mutex guard
+                                            match history_for_thread.lock() {
+                                                Ok(mut unlocked_history) => {
+                                                    // Delete the item 
+                                                    match unlocked_history.delete_this(item) {
+                                                        Ok(_) => {
+                                                            // Create snapshot, drop guard, send snapshot
+                                                            let snapshot = unlocked_history.clone();
+                                                            _send_snapshot(&mut s, snapshot);
+                                                        },
+                                                        Err(_) => {_send_msg(&mut s, "Could not delete item. Index out of bounds.");},
+                                                    };
+                                                    
+                                                    
+                                                },
+                                                Err(_) => {
+                                                    _send_msg(&mut s, "Could not unlock history");
+                                                }
+                                            }
+                                        }
                                         CmdIPC::Promote(pos) => {
                                             // Get mutex guard
                                             match history_for_thread.lock() {

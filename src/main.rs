@@ -18,10 +18,11 @@ use super_v::{
         LOCK_PATH, 
         SOCKET_PATH
     }, 
-    gui::clipboard_gui::{MainThreadMsg, run_gui},
+    gui::clipboard_gui::{MainThreadMsg, run_gui, send_command},
     services::{
         clipboard_manager::Manager, 
-        ydotol::send_shift_insert
+        ydotol::send_shift_insert,
+        clipboard_ipc_server::CmdIPC
     }
 };
 
@@ -83,30 +84,23 @@ fn main() {
             start_manager_daemon();
         },
         Command::OpenGui => {
-            use std::sync::mpsc::{self, channel};
+            use std::sync::mpsc::channel;
 
             // Create a simple streaming channel
             let (tx, rx) = channel::<MainThreadMsg>();
 
             let ydotool_handle = std::thread::spawn(move || {
-
-                loop {
-                    match rx.try_recv() {
-                        Ok(msg) => {
-                            // We got a message, handle it
-                            match msg {
-                                MainThreadMsg::AutoPaste => {
-                                    thread::sleep(Duration::from_millis(100));
-                                    send_shift_insert();
-                                    break;
-                                },
-                                MainThreadMsg::Close => {break;}
-                            }
-                        },
-                        Err(mpsc::TryRecvError::Empty) => {
-                            // No message, just continue
-                        },
-                        Err(mpsc::TryRecvError::Disconnected) => {
+                while let Ok(msg) = rx.recv() {
+                    match msg {
+                        MainThreadMsg::DeleteItem(item) => {
+                            thread::sleep(Duration::from_millis(200));
+                            let _ = send_command(CmdIPC::DeleteThis(item));
+                        }
+                        MainThreadMsg::AutoPaste => {
+                            thread::sleep(Duration::from_millis(100));
+                            send_shift_insert();
+                        }
+                        MainThreadMsg::Close => {
                             break;
                         }
                     }

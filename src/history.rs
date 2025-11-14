@@ -108,6 +108,20 @@ impl ClipboardHistory {
         }
     }
 
+    /// Delets an item at the given item from history.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `item` - The item to delete
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the position is out of bounds
+    pub fn delete_this(&mut self, item_to_remove: ClipboardItem) -> Result<(), ClipboardError> {
+        let index_to_remove = self.history.iter().position(|x| *x == item_to_remove).unwrap();
+        self.delete(index_to_remove)
+    }
+
     /// Returns a reference to all items in the clipboard history.
     /// 
     /// Items are ordered from most recent (front) to oldest (back).

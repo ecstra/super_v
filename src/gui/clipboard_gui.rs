@@ -24,13 +24,16 @@ use std::{
     thread, 
     sync::mpsc::Sender,
     borrow::Cow, 
-    rc::Rc, 
-    time::Duration
+    rc::Rc
 };
+
+use std::collections::HashMap;
+use gtk::gdk::Texture;
 
 pub enum MainThreadMsg {
     AutoPaste,
-    Close
+    Close,
+    DeleteItem(ClipboardItem)
 }
 
 struct GUI {
@@ -40,13 +43,9 @@ struct GUI {
     search_entry:     gtk::Entry,
     items_box:        gtk::Box,
     emoji_flow_box:   gtk::FlowBox,
+    image_cache: Rc<std::cell::RefCell<HashMap<Vec<u8>, Texture>>>,
     main_thread_tx:   Sender<MainThreadMsg>
 }
-
-// Todo:
-// 1. Emoji screen lag
-// 2. Lag when shifting to clipboard (has image previews)
-// 3. Animations
 
 impl GUI {
     const APP_ID: &str = "com.ecstra.super_v";
@@ -160,14 +159,15 @@ impl GUI {
             search_entry,
             items_box: items_box.clone(), // Clone for the struct
             emoji_flow_box,
+            image_cache: Rc::new(std::cell::RefCell::new(HashMap::new())),
             main_thread_tx
         })
     }
 
     fn signal_auto_paste(tx: Sender<MainThreadMsg>) {
-        std::thread::spawn(move || {
-            tx.send(MainThreadMsg::AutoPaste).unwrap();
-        });
+        if let Err(err) = tx.send(MainThreadMsg::AutoPaste) {
+            eprintln!("auto paste signal dropped: {err}");
+        }
     }
     
     fn get_clipboard() -> Result<Clipboard, arboard::Error> {
@@ -185,10 +185,9 @@ impl GUI {
     }
 
     fn close_window(window: gtk::ApplicationWindow, tx: Sender<MainThreadMsg>) {
-        std::thread::spawn(move || {
-            tx.send(MainThreadMsg::Close).unwrap();
-        });
-
+        if let Err(err) = tx.send(MainThreadMsg::Close) {
+            eprintln!("close signal dropped: {err}");
+        }
         window.close();
     }
 
@@ -213,21 +212,6 @@ impl GUI {
         }
     }
 
-    fn send_command(cmd: CmdIPC) -> Option<ClipboardHistory> {
-        match create_default_stream() {
-            Ok(mut stream) => {
-                send_payload(&mut stream, Payload::Request(IPCRequest { cmd }));
-                
-                let received_payload = read_payload(&mut stream);
-                if let Payload::Response(ipc_resp) = received_payload {
-                    return ipc_resp.history_snapshot;
-                }
-                None
-            }
-            Err(_) => None,
-        }
-    }
-
     fn clipboard_empty_state(items_box: &gtk::Box) {
         let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
         empty_box.set_valign(gtk::Align::Center);
@@ -245,10 +229,22 @@ impl GUI {
         items_box.append(&empty_box);
     }
 
-    fn construct_image(width: usize, height: usize, bytes: Vec<u8> ) -> Option<gtk::Picture> {
+    fn construct_image(width: usize, height: usize, bytes: Vec<u8>, cache: &Rc<std::cell::RefCell<HashMap<Vec<u8>, Texture>>>) -> Option<gtk::Picture> {
         const IMAGE_PREVIEW_TEXTURE_MAX_SIZE: usize = 200;
         const IMAGE_PREVIEW_DISPLAY_SIZE: i32 = 50;
 
+        // 1. Check cache first
+        if let Some(texture) = cache.borrow().get(&bytes) {
+            let picture = gtk::Picture::for_paintable(texture);
+            picture.set_can_shrink(true);
+            picture.set_keep_aspect_ratio(true);
+            picture.set_size_request(IMAGE_PREVIEW_DISPLAY_SIZE, IMAGE_PREVIEW_DISPLAY_SIZE);
+            picture.set_halign(gtk::Align::Start);
+            picture.add_css_class("image-preview");
+            return Some(picture);
+        }
+        
+        // 2. If not in cache, create it
         let stride = width.checked_mul(4)?;
         let expected_len = stride.checked_mul(height)?;
 
@@ -276,6 +272,9 @@ impl GUI {
 
         let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
 
+        // 3. Add the new texture to the cache
+        cache.borrow_mut().insert(bytes, texture.clone()); // <-- Store it
+
         let picture = gtk::Picture::for_paintable(&texture);
         picture.set_can_shrink(true);
         picture.set_keep_aspect_ratio(true);
@@ -286,60 +285,73 @@ impl GUI {
     }
 
     fn render_emojis(&self) {
+        // Clear all widgets instantly
         while let Some(child) = self.emoji_flow_box.first_child() {
             self.emoji_flow_box.remove(&child);
         }
         
-        // Get the search filter
         let search_filter = self.search_entry.text().to_string();
 
-        // Get emojis
-        let emojis: Vec<&str> = 
-        // Filter out the 🧑‍🩰 emoji since it occupies two spaces and ruins the flowbox
-        if !search_filter.trim().is_empty() {
-            // Apply filter if not empty
-            emojis::iter().filter(|e| e.name().contains(&search_filter) && e.as_str() != "🧑‍🩰").map(|e| e.as_str()).collect()
-        } else {
-            // If empty, return all emojis
-            emojis::iter().filter(|e| e.as_str() != "🧑‍🩰").map(|e| e.as_str()).collect()
-        };
+        // 1. Get the full list of emoji strings (this is fast)
+        let emojis: Vec<String> = 
+            if !search_filter.trim().is_empty() {
+                emojis::iter().filter(|e| e.name().contains(&search_filter) && e.as_str() != "🧑‍🩰").map(|e| e.as_str().to_string()).collect()
+            } else {
+                emojis::iter().filter(|e| e.as_str() != "🧑‍🩰").map(|e| e.as_str().to_string()).collect()
+            };
 
-        // Add emojis to flowbox
-        for &emoji in emojis.iter() {
-            
-            let emoji_entry = gtk::Button::with_label(emoji);
-            emoji_entry.add_css_class("emoji-btn");
+        // 2. Wrap the list in Rc for the async loader
+        let emoji_list = Rc::new(emojis);
+        let progress = Rc::new(std::cell::Cell::new(0usize));
+        let chunk_size = 100; // Add 100 emojis per frame
 
-            // Make sure to paste and close the window when clicked
-            // Dk how to paste without closing window
-            // Since auto-paste works only after window is closed
-            
-            let window_clone = self.window.clone();
-            let tx = self.main_thread_tx.clone();
+        // 3. Clone everything needed for the async task
+        let emoji_flow_box = self.emoji_flow_box.clone();
+        let window = self.window.clone();
+        let tx = self.main_thread_tx.clone();
 
-            emoji_entry.connect_clicked(move |_| {
-                if let Ok(mut clipboard) = Self::get_clipboard() {
-                    if !emoji.trim().is_empty() {
-                        // Update system clipboard with the emoji
-                        let _ = clipboard.set_text(emoji);
-                        Self::signal_auto_paste(tx.clone());
-                        Self::close_window(window_clone.clone(), tx.clone());
+        // 4. Start the async loader
+        gtk::glib::idle_add_local(move || {
+            let start = progress.get();
+            let end = (start + chunk_size).min(emoji_list.len());
 
-                        thread::spawn(move || {                       
-                            // Wait for Clipboard Manager to pick it up
-                            thread::sleep(Duration::from_millis(200));
+            // Get the chunk of emojis to add
+            if let Some(emojis_to_add) = emoji_list.get(start..end) {
+                for emoji in emojis_to_add {
+                    let emoji_entry = gtk::Button::with_label(emoji);
+                    emoji_entry.add_css_class("emoji-btn");
+                    
+                    let window_clone = window.clone();
+                    let tx_clone = tx.clone();
+                    let emoji_str = emoji.clone(); // Clone for the closure
 
-                            // Now, the emoji should be on top of manager (0)
-                            // Delete the emoji from manager
-                            Self::send_command(CmdIPC::Delete(0));
-                        });
-                        return;
-                    }
+                    emoji_entry.connect_clicked(move |_| {
+                        if let Ok(mut clipboard) = Self::get_clipboard() {
+                            let emoji_str = emoji_str.clone();
+                            let _ = clipboard.set_text(&emoji_str);
+
+                            if let Err(err) = tx_clone.send(MainThreadMsg::DeleteItem(ClipboardItem::Text(emoji_str.clone()))) {
+                                eprintln!("delete signal dropped: {err}");
+                            }
+
+                            Self::signal_auto_paste(tx_clone.clone());
+                            Self::close_window(window_clone.clone(), tx_clone.clone());
+                        }
+                    });
+                    emoji_flow_box.insert(&emoji_entry, -1);
                 }
-            });
+            }
 
-            self.emoji_flow_box.insert(&emoji_entry, -1);
-        }
+            // Update progress
+            progress.set(end);
+
+            // If we're done, stop. Otherwise, run again.
+            if end == emoji_list.len() {
+                gtk::glib::ControlFlow::Break
+            } else {
+                gtk::glib::ControlFlow::Continue
+            }
+        });
     }
 
     fn render_clipboard_items(&self) {
@@ -383,8 +395,7 @@ impl GUI {
                 }
                 ClipboardItem::Image { width, height, bytes } => {
                     // Replace with image preview
-
-                    if let Some(picture) = Self::construct_image(*width, *height, bytes.clone()) {
+                    if let Some(picture) = Self::construct_image(*width, *height, bytes.clone(), &self.image_cache) {
                         content_box.append(&picture);
                     } else {
                         let preview = format!("Image: {width} x {height}");
@@ -483,7 +494,7 @@ impl GUI {
 
                 // Send command to update the server
                 thread::spawn(move || {
-                    Self::send_command(CmdIPC::Delete(current_index));
+                    send_command(CmdIPC::Delete(current_index));
                 });
             });
 
@@ -533,7 +544,7 @@ impl GUI {
 
             // Send message to server to clear
             thread::spawn(move || {
-                Self::send_command(CmdIPC::Clear);
+                send_command(CmdIPC::Clear);
             });
         });
 
@@ -580,6 +591,21 @@ impl GUI {
 
         // Present the window
         self.window.present();
+    }
+}
+
+pub fn send_command(cmd: CmdIPC) -> Option<ClipboardHistory> {
+    match create_default_stream() {
+        Ok(mut stream) => {
+            send_payload(&mut stream, Payload::Request(IPCRequest { cmd }));
+
+            let received_payload = read_payload(&mut stream);
+            if let Payload::Response(ipc_resp) = received_payload {
+                return ipc_resp.history_snapshot;
+            }
+            None
+        }
+        Err(_) => None,
     }
 }
 
