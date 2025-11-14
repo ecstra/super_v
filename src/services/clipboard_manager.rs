@@ -232,18 +232,30 @@ impl Manager {
                 // So no need for thread-to-thread communication management and can purely focus on IPC management.
                 // Checks if item is new or not.
                 if current_item != last_item {
-                    // Acquire Lock
-                    match shared_history.try_lock() {
-                        Ok(mut unlocked_history) => {
-                            // Add item to history
-                            unlocked_history.add(current_item.clone());
-                            println!("Curent History: \n{}\r\n", unlocked_history);
+                    // Check if the item is worth adding (not an empty text string)
+                    let is_empty_text = if let ClipboardItem::Text(text) = &current_item {
+                        text.trim().is_empty()
+                    } else {
+                        false // It's an Image, so it's not empty text
+                    };
 
-                            // Update Last item
-                            last_item = current_item
-                        },
-                        Err(_) => {/* Failed To Get Lock, Skip */},
+                    if !is_empty_text {
+                        // It's either an Image or non-empty Text.
+                        // Acquire Lock and add it.
+                        match shared_history.try_lock() {
+                            Ok(mut unlocked_history) => {
+                                // Add item to history
+                                unlocked_history.add(current_item.clone());
+                                println!("Curent History: \n{}\r\n", unlocked_history);
+                                
+                                // Update the last item within this
+                                last_item = current_item
+                                // So last item wont be written if mutex fails
+                            },
+                            Err(_) => {/* Failed To Get Lock, Skip */},
+                        }
                     }
+                    // else: It's an empty text item, so we skip adding it.
                 }
 
                 // Poll every 100ms

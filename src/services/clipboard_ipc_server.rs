@@ -57,6 +57,7 @@ pub struct IPCResponse {
     pub message: Option<String>
 }
 
+// In case another data or id is to be sent
 #[allow(unused)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IPCRequest {

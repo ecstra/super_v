@@ -20,19 +20,7 @@ scrollbar slider:hover {
     border: none;
 }
 
-.main-box {
-    background-color: transparent;
-    margin: 2px;
-}
-
-.header-box {
-    background-color: transparent;
-    min-height: 38px;
-    margin: 6px;
-    padding: 2px 5px 4px 5px;
-}
-
-.tab-button {
+stackswitcher > button {
     background-color: transparent;
     background-image: none;
     border: none;
@@ -46,13 +34,25 @@ scrollbar slider:hover {
     margin-right: 8px;
 }
 
-.tab-button:hover {
+stackswitcher > button:checked {
+    color: rgba(255, 255, 255, 0.7);
+    border-bottom: 2px solid #ffffff;
+}
+
+stackswitcher > button:hover:not(:checked) {
     color: rgba(255, 255, 255, 0.7);
 }
 
-.active-tab {
-    color: rgba(255, 255, 255, 0.7);
-    border-bottom: 2px solid #ffffff;
+.main-box {
+    background-color: transparent;
+    margin: 2px;
+}
+
+.header-box {
+    background-color: transparent;
+    min-height: 38px;
+    margin: 6px;
+    padding: 2px 5px 4px 5px;
 }
 
 .clear-all-btn {
@@ -102,7 +102,6 @@ scrollbar slider:hover {
     border-radius: 6px;
 }
 
-
 .delete-btn {
     background-color: transparent;
     background-image: none;
@@ -144,6 +143,10 @@ button.delete-btn:hover {
 
 .emoji-btn:hover {
     background: rgba(60, 60, 70, 0.4);
+}
+
+.emoji-box {
+    margin: 6px;
 }
 
 .search-entry {

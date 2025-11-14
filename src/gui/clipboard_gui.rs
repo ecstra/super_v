@@ -12,7 +12,7 @@ use crate::{
         }
     }
 };
-
+use gdk_pixbuf::{InterpType, Pixbuf};
 use gtk4::{
     self as gtk,
     Application,
@@ -21,253 +21,343 @@ use gtk4::{
 };
 use arboard::{Clipboard, ImageData};
 use std::{
-    borrow::Cow, cell::{Cell, RefCell}, collections::HashMap, fs, hash::{Hash, Hasher}, rc::Rc, sync::{
-        Arc, 
-        Mutex
-    }, time::Duration
+    thread, 
+    sync::mpsc::Sender,
+    borrow::Cow, 
+    rc::Rc, 
+    time::Duration
 };
-use gdk_pixbuf::{InterpType, Pixbuf};
 
-const APP_ID: &str = "com.ecstra.super_v";
-pub const SHOULD_PASTE_FLAG: &str = "/tmp/super_v_should_paste";
-
-#[derive(Clone)]
-struct EmojiEntry {
-    button: gtk::Button,
-    search_text: String,
-    matches: Cell<bool>,
+pub enum MainThreadMsg {
+    AutoPaste,
+    Close
 }
 
-struct EmojiMeta {
-    emoji: String,
-    search_text: String,
+struct GUI {
+    window:           gtk::ApplicationWindow,
+    stack:            gtk::Stack,
+    clear_all_btn:    gtk::Button,
+    search_entry:     gtk::Entry,
+    items_box:        gtk::Box,
+    emoji_flow_box:   gtk::FlowBox,
+    main_thread_tx:   Sender<MainThreadMsg>
 }
 
-type ImagePreviewCache = Rc<RefCell<HashMap<u64, gtk::gdk::Texture>>>;
+// Todo:
+// 1. Emoji screen lag
+// 2. Lag when shifting to clipboard (has image previews)
+// 3. Animations
 
-const IMAGE_PREVIEW_TEXTURE_MAX_SIZE: usize = 200;
-const IMAGE_PREVIEW_DISPLAY_SIZE: i32 = 50;
+impl GUI {
+    const APP_ID: &str = "com.ecstra.super_v";
 
-fn build_emoji_dataset() -> Vec<EmojiMeta> {
-    emojis::iter()
-        .filter(|e| e.as_str() != "🧑‍🩰")
-        .map(|emoji| {
-            let name = emoji.name().to_lowercase();
-            let shortcode = emoji
-                .shortcode()
-                .map(|s| s.to_lowercase())
-                .unwrap_or_default();
-            let mut search_text = name;
-            if !shortcode.is_empty() {
-                search_text.push(' ');
-                search_text.push_str(&shortcode);
-            }
-            EmojiMeta {
-                emoji: emoji.as_str().to_string(),
-                search_text,
-            }
+    fn new(app: &Application, main_thread_tx: Sender<MainThreadMsg>) -> Rc<Self> {
+        // -------------------- Window Creation ----------------------
+        let window = gtk::ApplicationWindow::builder().build();
+        window.set_application(Some(app));
+        // -----------------------------------------------------------
+
+        // -------------------- Window Settings ----------------------
+        const WIDTH      : i32    = 360;
+        const HEIGHT     : i32    = 400;
+        const TOP_PANEL  : bool   = false;
+        const MODAL      : bool   = true;
+
+        window.set_default_size(WIDTH, HEIGHT);
+        window.set_decorated(TOP_PANEL);
+        window.set_modal(MODAL);
+        // -----------------------------------------------------------
+
+        // ------------------------ CSS ------------------------------
+        let css_provider = gtk::CssProvider::new();
+        css_provider.load_from_data(include_str!("./style.css"));
+        gtk::style_context_add_provider_for_display(
+            &WidgetExt::display(&window),
+            &css_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        // -----------------------------------------------------------
+
+        // --------------------- Main Layout --------------------------
+        let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        main_box.add_css_class("main-box");
+        
+        let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        header_box.add_css_class("header-box");
+
+        let stack_switcher = gtk::StackSwitcher::new();
+        header_box.append(&stack_switcher);
+
+        let clear_all_btn = gtk::Button::new();
+        clear_all_btn.set_label("Clear All");
+        clear_all_btn.add_css_class("clear-all-btn");
+        clear_all_btn.set_hexpand(true);
+        clear_all_btn.set_halign(gtk::Align::End);
+        clear_all_btn.set_visible(true); // Visible by default
+
+        header_box.append(&clear_all_btn);
+        main_box.append(&header_box);
+
+        let search_entry = gtk::Entry::new();
+        search_entry.set_placeholder_text(Some("Search emojis..."));
+        search_entry.add_css_class("search-entry");
+        search_entry.set_visible(false); // Hidden by default
+        main_box.append(&search_entry);
+
+        // Create the Stack
+        let stack = gtk::Stack::new();
+        stack.set_vexpand(true);
+        stack.set_hexpand(true);
+
+        // Page 1: Clipboard
+        let scrolled_window = gtk::ScrolledWindow::new();
+        scrolled_window.add_css_class("scrollable-window");
+        scrolled_window.set_vexpand(true);
+        scrolled_window.set_hexpand(true);
+
+        let items_box = gtk::Box::new(gtk::Orientation::Vertical, 5);
+        items_box.add_css_class("items-box");
+        scrolled_window.set_child(Some(&items_box));
+
+        stack.add_titled(&scrolled_window, Some("clipboard"), "Clipboard");
+        let clipboard_page = stack.page(&scrolled_window);
+        clipboard_page.set_icon_name("edit-paste-symbolic");
+
+        // Page 2: Emoji
+        let emoji_flow_box = gtk::FlowBox::new();
+        emoji_flow_box.add_css_class("emoji-box");
+        emoji_flow_box.set_hexpand(false);
+        emoji_flow_box.set_valign(gtk::Align::Start);
+        emoji_flow_box.set_vexpand(true);
+        emoji_flow_box.set_max_children_per_line(7);
+        emoji_flow_box.set_min_children_per_line(4);
+        emoji_flow_box.set_selection_mode(gtk::SelectionMode::None);
+        emoji_flow_box.set_homogeneous(true);
+        emoji_flow_box.set_row_spacing(1);
+        emoji_flow_box.set_column_spacing(1);
+
+        let emoji_scrolled_window = gtk::ScrolledWindow::new();
+        emoji_scrolled_window.add_css_class("scrollable-window");
+        emoji_scrolled_window.set_vexpand(true);
+        emoji_scrolled_window.set_hexpand(true);
+        emoji_scrolled_window.set_child(Some(&emoji_flow_box));
+
+        stack.add_titled(&emoji_scrolled_window, Some("emoji"), "Emoji");
+        let emoji_page = stack.page(&emoji_scrolled_window);
+        emoji_page.set_icon_name("face-smile-symbolic");
+
+        // Final Layout Assembly
+        main_box.append(&stack);
+        window.set_child(Some(&main_box));
+        stack_switcher.set_stack(Some(&stack));
+        // ------------------------------------------------------------
+        
+        // Create and return the Gui instance
+        Rc::new(Self {
+            window: window.clone(), // Clone for the struct
+            stack: stack.clone(),   // Clone for the struct
+            clear_all_btn,
+            search_entry,
+            items_box: items_box.clone(), // Clone for the struct
+            emoji_flow_box,
+            main_thread_tx
         })
-        .collect()
-}
+    }
 
-fn build_image_preview(
-    width: usize,
-    height: usize,
-    bytes: &[u8],
-    cache: &ImagePreviewCache,
-) -> Option<gtk::Picture> {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    width.hash(&mut hasher);
-    height.hash(&mut hasher);
-    bytes.hash(&mut hasher);
-    let cache_key = hasher.finish();
+    fn signal_auto_paste(tx: Sender<MainThreadMsg>) {
+        std::thread::spawn(move || {
+            tx.send(MainThreadMsg::AutoPaste).unwrap();
+        });
+    }
+    
+    fn get_clipboard() -> Result<Clipboard, arboard::Error> {
+        Clipboard::new()
+    }
 
-    if let Some(texture) = cache.borrow().get(&cache_key) {
-        let picture = gtk::Picture::for_paintable(texture);
+    fn clear_items_box(items_box: &gtk::Box) {
+        while let Some(child) = items_box.first_child() {
+            items_box.remove(&child);
+        }
+    }
+
+    fn count_items(items_box: &gtk::Box) -> u32 {
+        items_box.observe_children().n_items()
+    }
+
+    fn close_window(window: gtk::ApplicationWindow, tx: Sender<MainThreadMsg>) {
+        std::thread::spawn(move || {
+            tx.send(MainThreadMsg::Close).unwrap();
+        });
+
+        window.close();
+    }
+
+    fn fetch_history() -> ClipboardHistory {
+        let new_clipboard = ClipboardHistory::new(25);
+
+        match create_default_stream() {
+            Ok(mut stream) => {
+                send_payload(&mut stream, Payload::Request(IPCRequest {
+                    cmd: CmdIPC::Snapshot
+                }));
+                
+                let received_payload = read_payload(&mut stream);
+                match received_payload {
+                    Payload::Response(ipc_resp) => {
+                        ipc_resp.history_snapshot.unwrap_or_else(|| new_clipboard)
+                    }
+                    _ => new_clipboard
+                }
+            }
+            Err(_) => new_clipboard
+        }
+    }
+
+    fn send_command(cmd: CmdIPC) -> Option<ClipboardHistory> {
+        match create_default_stream() {
+            Ok(mut stream) => {
+                send_payload(&mut stream, Payload::Request(IPCRequest { cmd }));
+                
+                let received_payload = read_payload(&mut stream);
+                if let Payload::Response(ipc_resp) = received_payload {
+                    return ipc_resp.history_snapshot;
+                }
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn clipboard_empty_state(items_box: &gtk::Box) {
+        let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        empty_box.set_valign(gtk::Align::Center);
+        empty_box.set_vexpand(true);
+        empty_box.set_margin_top(-10);
+
+        let empty_title = gtk::Label::new(Some("Clipboard empty"));
+        empty_title.add_css_class("empty-title");
+
+        let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
+        empty_subtitle.add_css_class("empty-subtitle");
+
+        empty_box.append(&empty_title);
+        empty_box.append(&empty_subtitle);
+        items_box.append(&empty_box);
+    }
+
+    fn construct_image(width: usize, height: usize, bytes: Vec<u8> ) -> Option<gtk::Picture> {
+        const IMAGE_PREVIEW_TEXTURE_MAX_SIZE: usize = 200;
+        const IMAGE_PREVIEW_DISPLAY_SIZE: i32 = 50;
+
+        let stride = width.checked_mul(4)?;
+        let expected_len = stride.checked_mul(height)?;
+
+        let bytes_owned = gtk::glib::Bytes::from_owned(bytes[..expected_len].to_vec());
+        let mut pixbuf = Pixbuf::from_bytes(
+            &bytes_owned,
+            gdk_pixbuf::Colorspace::Rgb,
+            true,
+            8,
+            width as i32,
+            height as i32,
+            stride as i32,
+        );
+
+        let max_dim = width.max(height) as f32;
+        if max_dim > IMAGE_PREVIEW_TEXTURE_MAX_SIZE as f32 {
+            let scale = IMAGE_PREVIEW_TEXTURE_MAX_SIZE as f32 / max_dim;
+            let target_width = (width as f32 * scale).round().max(1.0) as i32;
+            let target_height = (height as f32 * scale).round().max(1.0) as i32;
+            if let Some(resized) = pixbuf.scale_simple(target_width, target_height, InterpType::Hyper)
+            {
+                pixbuf = resized;
+            }
+        }
+
+        let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+
+        let picture = gtk::Picture::for_paintable(&texture);
         picture.set_can_shrink(true);
         picture.set_keep_aspect_ratio(true);
         picture.set_size_request(IMAGE_PREVIEW_DISPLAY_SIZE, IMAGE_PREVIEW_DISPLAY_SIZE);
         picture.set_halign(gtk::Align::Start);
         picture.add_css_class("image-preview");
-        return Some(picture);
+        Some(picture)
     }
 
-    let stride = width.checked_mul(4)?;
-    let expected_len = stride.checked_mul(height)?;
-    if bytes.len() < expected_len {
-        return None;
-    }
-
-    let bytes_owned = gtk::glib::Bytes::from_owned(bytes[..expected_len].to_vec());
-    let mut pixbuf = Pixbuf::from_bytes(
-        &bytes_owned,
-        gdk_pixbuf::Colorspace::Rgb,
-        true,
-        8,
-        width as i32,
-        height as i32,
-        stride as i32,
-    );
-
-    let max_dim = width.max(height) as f32;
-    if max_dim > IMAGE_PREVIEW_TEXTURE_MAX_SIZE as f32 {
-        let scale = IMAGE_PREVIEW_TEXTURE_MAX_SIZE as f32 / max_dim;
-        let target_width = (width as f32 * scale).round().max(1.0) as i32;
-        let target_height = (height as f32 * scale).round().max(1.0) as i32;
-        if let Some(resized) = pixbuf.scale_simple(target_width, target_height, InterpType::Hyper)
-        {
-            pixbuf = resized;
+    fn render_emojis(&self) {
+        while let Some(child) = self.emoji_flow_box.first_child() {
+            self.emoji_flow_box.remove(&child);
         }
-    }
+        
+        // Get the search filter
+        let search_filter = self.search_entry.text().to_string();
 
-    let texture = gtk::gdk::Texture::for_pixbuf(&pixbuf);
+        // Get emojis
+        let emojis: Vec<&str> = 
+        // Filter out the 🧑‍🩰 emoji since it occupies two spaces and ruins the flowbox
+        if !search_filter.trim().is_empty() {
+            // Apply filter if not empty
+            emojis::iter().filter(|e| e.name().contains(&search_filter) && e.as_str() != "🧑‍🩰").map(|e| e.as_str()).collect()
+        } else {
+            // If empty, return all emojis
+            emojis::iter().filter(|e| e.as_str() != "🧑‍🩰").map(|e| e.as_str()).collect()
+        };
 
-    {
-        let mut cache_ref = cache.borrow_mut();
-        cache_ref.insert(cache_key, texture.clone());
-    }
-
-    let picture = gtk::Picture::for_paintable(&texture);
-    picture.set_can_shrink(true);
-    picture.set_keep_aspect_ratio(true);
-    picture.set_size_request(IMAGE_PREVIEW_DISPLAY_SIZE, IMAGE_PREVIEW_DISPLAY_SIZE);
-    picture.set_halign(gtk::Align::Start);
-    picture.add_css_class("image-preview");
-    Some(picture)
-}
-
-fn apply_emoji_filter(entries: &RefCell<Vec<EmojiEntry>>, filter: &str, flow_box: &gtk::FlowBox) {
-    let filter = filter.trim();
-    let filter_lower = filter.to_lowercase();
-    let show_all = filter_lower.is_empty();
-
-    {
-        let entries_ref = entries.borrow();
-        for entry in entries_ref.iter() {
-            let matches = show_all || entry.search_text.contains(&filter_lower);
-            entry.matches.set(matches);
-        }
-    }
-
-    flow_box.invalidate_filter();
-}
-
-fn append_empty_state(items_box: &gtk::Box) {
-    let empty_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    empty_box.set_valign(gtk::Align::Center);
-    empty_box.set_vexpand(true);
-    empty_box.set_margin_top(-10);
-
-    let empty_title = gtk::Label::new(Some("Clipboard empty"));
-    empty_title.add_css_class("empty-title");
-
-    let empty_subtitle = gtk::Label::new(Some("Copy something and come back here"));
-    empty_subtitle.add_css_class("empty-subtitle");
-
-    empty_box.append(&empty_title);
-    empty_box.append(&empty_subtitle);
-    items_box.append(&empty_box);
-}
-
-pub fn run_gui() {
-    let app = Application::builder()
-        .application_id(APP_ID)
-        .build();
-
-    app.connect_activate(build_ui);
-    app.run_with_args(&Vec::<String>::new()); // Changed from app.run()
-}
-
-fn fetch_history() -> ClipboardHistory {
-    let new_clipboard = ClipboardHistory::new(25);
-
-    match create_default_stream() {
-        Ok(mut stream) => {
-            send_payload(&mut stream, Payload::Request(IPCRequest {
-                cmd: CmdIPC::Snapshot
-            }));
+        // Add emojis to flowbox
+        for &emoji in emojis.iter() {
             
-            let received_payload = read_payload(&mut stream);
-            match received_payload {
-                Payload::Response(ipc_resp) => {
-                    ipc_resp.history_snapshot.unwrap_or_else(|| new_clipboard)
+            let emoji_entry = gtk::Button::with_label(emoji);
+            emoji_entry.add_css_class("emoji-btn");
+
+            // Make sure to paste and close the window when clicked
+            // Dk how to paste without closing window
+            // Since auto-paste works only after window is closed
+            
+            let window_clone = self.window.clone();
+            let tx = self.main_thread_tx.clone();
+
+            emoji_entry.connect_clicked(move |_| {
+                if let Ok(mut clipboard) = Self::get_clipboard() {
+                    if !emoji.trim().is_empty() {
+                        // Update system clipboard with the emoji
+                        let _ = clipboard.set_text(emoji);
+                        Self::signal_auto_paste(tx.clone());
+                        Self::close_window(window_clone.clone(), tx.clone());
+
+                        thread::spawn(move || {                       
+                            // Wait for Clipboard Manager to pick it up
+                            thread::sleep(Duration::from_millis(200));
+
+                            // Now, the emoji should be on top of manager (0)
+                            // Delete the emoji from manager
+                            Self::send_command(CmdIPC::Delete(0));
+                        });
+                        return;
+                    }
                 }
-                _ => new_clipboard
-            }
+            });
+
+            self.emoji_flow_box.insert(&emoji_entry, -1);
         }
-        Err(_) => new_clipboard
-    }
-}
-
-fn send_command(cmd: CmdIPC) -> Option<ClipboardHistory> {
-    match create_default_stream() {
-        Ok(mut stream) => {
-            send_payload(&mut stream, Payload::Request(IPCRequest { cmd }));
-            
-            let received_payload = read_payload(&mut stream);
-            if let Payload::Response(ipc_resp) = received_payload {
-                return ipc_resp.history_snapshot;
-            }
-            None
-        }
-        Err(_) => None,
-    }
-}
-
-fn refresh_items(
-    items_box: &gtk::Box, 
-    window: &gtk::ApplicationWindow, 
-    persistent_clipboard: Arc<Mutex<Clipboard>>,
-    image_cache: ImagePreviewCache,
-    refresh_generation: Rc<Cell<u64>>,
-) {
-    let new_generation = refresh_generation.get().wrapping_add(1);
-    refresh_generation.set(new_generation);
-
-    // Clear all existing items
-    while let Some(child) = items_box.first_child() {
-        items_box.remove(&child);
     }
 
-    // Fetch fresh history
-    let fetched_history = fetch_history();
-    let clipboard_items = fetched_history.get_items();
+    fn render_clipboard_items(&self) {
+        let history = Self::fetch_history();
+        let items = history.get_items();
 
-    // Show empty state if no items
-    if clipboard_items.is_empty() {
-        append_empty_state(items_box);
-        return;
-    }
+        // Clear all items
+        // much easier to just clear and update
+        // Than to manage the items in GUI and re-order
+        Self::clear_items_box(&self.items_box);
 
-    let clipboard_items_vec: Rc<Vec<ClipboardItem>> = Rc::new(clipboard_items.iter().cloned().collect());
-    let total_items = clipboard_items_vec.len();
-
-    let progress = Rc::new(Cell::new(0usize));
-    let items_box_idle = items_box.clone();
-    let window_idle = window.clone();
-    let clipboard_idle = persistent_clipboard.clone();
-    let image_cache_idle = image_cache.clone();
-    let refresh_generation_idle = refresh_generation.clone();
-
-    gtk::glib::idle_add_local(move || {
-        if refresh_generation_idle.get() != new_generation {
-            return gtk::glib::ControlFlow::Break;
+        // Check if it's empty
+        if items.is_empty() {
+            Self::clipboard_empty_state(&self.items_box);
+            return;
         }
-
-        let start = progress.get();
-        if start >= total_items {
-            return gtk::glib::ControlFlow::Break;
-        }
-
-        let chunk_size = 6;
-        let end = (start + chunk_size).min(total_items);
-
-        for item in &clipboard_items_vec[start..end] {
-            let revealer = gtk::Revealer::new();
-            revealer.set_transition_type(gtk::RevealerTransitionType::SlideUp);
-            revealer.set_transition_duration(220);
-            revealer.set_reveal_child(true);
-
+        
+        for item in items.iter() {
             let item_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             item_box.add_css_class("clipboard-item");
 
@@ -288,40 +378,56 @@ fn refresh_items(
                     content_label.set_xalign(0.0);
                     content_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     content_label.set_max_width_chars(40);
+
                     content_box.append(&content_label);
                 }
                 ClipboardItem::Image { width, height, bytes } => {
-                    if let Some(picture) = build_image_preview(*width, *height, bytes, &image_cache_idle)
-                    {
+                    // Replace with image preview
+
+                    if let Some(picture) = Self::construct_image(*width, *height, bytes.clone()) {
                         content_box.append(&picture);
+                    } else {
+                        let preview = format!("Image: {width} x {height}");
+                        let content_label = gtk::Label::new(Some(&preview));
+                        content_label.set_valign(gtk::Align::Center);
+                        content_label.add_css_class("content-label");
+                        content_label.set_xalign(0.0);
+                        content_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                        content_label.set_max_width_chars(40);
+                        content_box.append(&content_label);
                     }
                 }
             }
 
+            // Make each item clickable
             let gesture = gtk::GestureClick::new();
-            let window_clone = window_idle.clone();
             let item_clone = item.clone();
-            let clipboard_arc = clipboard_idle.clone();
-
+            let window_clone = self.window.clone();
+            let tx = self.main_thread_tx.clone();
+            
             gesture.connect_released(move |_, _, _, _| {
-                let item_for_thread = item_clone.clone();
-                let clipboard_for_thread = clipboard_arc.clone();
-                let window_for_close = window_clone.clone();
 
-                if let ClipboardItem::Text(text) = &item_for_thread {
-                    if let Ok(mut clipboard) = clipboard_for_thread.lock() {
+                if let ClipboardItem::Text(text) = &item_clone {
+                    if let Ok(mut clipboard) = Self::get_clipboard() {
                         if !text.trim().is_empty() {
+                            // Update system clipboard
+                            // This says I'm dropping the clipboard too fast (5ms)
+                            // eh... should be just fine.
                             let _ = clipboard.set_text(text);
-                            let _ = fs::write(SHOULD_PASTE_FLAG, "1");
-                            window_for_close.close();
+
+                            // Signal for auto paste and close the window
+                            Self::signal_auto_paste(tx.clone());
+                            Self::close_window(window_clone.clone(), tx.clone());
                             return;
                         }
                     }
                 }
 
-                if let ClipboardItem::Image {width, height, bytes} = &item_for_thread {
-                    if let Ok(mut clipboard) = clipboard_for_thread.lock() {
+                if let ClipboardItem::Image {width, height, bytes} = &item_clone {
+
+                    if let Ok(mut clipboard) = Self::get_clipboard() {
                         if !bytes.is_empty() {
+                            // Same 5ms drop here...
                             let _ = clipboard.set_image(
                                 ImageData {
                                     width: *width,
@@ -329,478 +435,169 @@ fn refresh_items(
                                     bytes: Cow::from(bytes)
                                 }
                             );
-                            let _ = fs::write(SHOULD_PASTE_FLAG, "1");
-                            window_for_close.close();
+
+                            // Signal for auto paste and close the window
+                            Self::signal_auto_paste(tx.clone());
+                            Self::close_window(window_clone.clone(), tx.clone());
                             return;
                         }
                     }
                 }
 
-                window_clone.close();
+                // Close the window
+                Self::close_window(window_clone.clone(), tx.clone());
             });
-
+            
             item_box.add_controller(gesture);
 
+            // Delete button for each item
             let delete_btn = gtk::Button::new();
             delete_btn.set_icon_name("user-trash-symbolic");
             delete_btn.add_css_class("delete-btn");
             delete_btn.set_valign(gtk::Align::Start);
 
-            let items_box_clone = items_box_idle.clone();
-            let item_revealer = revealer.clone();
+            // Make the delete button functional
+            let items_box = self.items_box.clone();
+            let item_box_clone = item_box.clone();
 
             delete_btn.connect_clicked(move |_| {
-                let current_index = (0..items_box_clone.observe_children().n_items())
+                // Get the index of the object
+                let current_index = (0..Self::count_items(&items_box))
                     .find(|&i| {
-                        items_box_clone
-                            .observe_children()
-                            .item(i)
-                            .and_then(|obj| obj.downcast::<gtk::Revealer>().ok())
-                            .as_ref()
-                            == Some(&item_revealer)
+                        items_box
+                            .observe_children() // Get all children
+                            .item(i) // Position
+                            .and_then(|obj| obj.downcast::<gtk::Box>().ok()) // Convert object -> Box
+                            .as_ref() // Ref, no need to move
+                            == Some(&item_box_clone) // Matches the item we want to delete?
                     })
-                    .unwrap_or(0);
+                    .unwrap_or(0) as usize;
 
-                item_revealer.set_reveal_child(false);
+                // Remove that object from items box
+                items_box.remove(&item_box_clone);
+                
+                // If box is empty after deleting, add the "empty" message
+                if items_box.first_child().is_none() {
+                    Self::clipboard_empty_state(&items_box);   
+                }
 
-                let items_box_for_removal = items_box_clone.clone();
-                let revealer_for_removal = item_revealer.clone();
-
-                gtk::glib::timeout_add_local_once(Duration::from_millis(220), move || {
-                    items_box_for_removal.remove(&revealer_for_removal);
-
-                    if items_box_for_removal.first_child().is_none() {
-                        append_empty_state(&items_box_for_removal);
-                    }
-
-                    std::thread::spawn(move || {
-                        send_command(CmdIPC::Delete(current_index as usize));
-                    });
+                // Send command to update the server
+                thread::spawn(move || {
+                    Self::send_command(CmdIPC::Delete(current_index));
                 });
             });
 
             item_box.append(&content_box);
             item_box.append(&delete_btn);
 
-            revealer.set_child(Some(&item_box));
-            items_box_idle.append(&revealer);
+            self.items_box.append(&item_box);
         }
-
-        progress.set(end);
-
-        if end >= total_items {
-            gtk::glib::ControlFlow::Break
-        } else {
-            gtk::glib::ControlFlow::Continue
-        }
-    });
-}
-
-fn show_emojis(
-    items_box: &gtk::Box,
-    window: &gtk::ApplicationWindow,
-    persistent_clipboard: Arc<Mutex<Clipboard>>,
-    search_filter: Option<&str>,
-    emoji_flow_box: &gtk::FlowBox,
-    emoji_entries: Rc<RefCell<Vec<EmojiEntry>>>,
-    emojis_initialized: Rc<Cell<bool>>,
-    emoji_dataset: Rc<Vec<EmojiMeta>>,
-    current_filter: Rc<RefCell<String>>,
-) {
-    while let Some(child) = items_box.first_child() {
-        items_box.remove(&child);
     }
 
-    items_box.append(emoji_flow_box);
-    emoji_flow_box.show();
+    /// Handles logic for when the active tab (Stack page) changes.
+    fn handle_tab_switch(&self, stack: &gtk::Stack) {
+        if let Some(name) = stack.visible_child_name() {
+            let is_clipboard = name == "clipboard";
 
-    if let Some(filter) = search_filter {
-        *current_filter.borrow_mut() = filter.to_lowercase();
-    } else {
-        current_filter.borrow_mut().clear();
-    }
+            // Toggle visibility of page-specific controls
+            self.clear_all_btn.set_visible(is_clipboard);
+            self.search_entry.set_visible(!is_clipboard);
 
-    if emojis_initialized.get() {
-        let filter_value = current_filter.borrow().clone();
-        apply_emoji_filter(&emoji_entries, &filter_value, emoji_flow_box);
-        return;
-    }
-
-    emojis_initialized.set(true);
-
-    let flow_box_clone = emoji_flow_box.clone();
-    let entries_clone = emoji_entries.clone();
-    let dataset_clone = emoji_dataset.clone();
-    let window_clone = window.clone();
-    let clipboard_clone = persistent_clipboard.clone();
-    let current_filter_clone = current_filter.clone();
-
-    let progress = Rc::new(Cell::new(0usize));
-    gtk::glib::idle_add_local(move || {
-        let start = progress.get();
-        let dataset = &*dataset_clone;
-        if start >= dataset.len() {
-            let filter_value = current_filter_clone.borrow().clone();
-            apply_emoji_filter(&entries_clone, &filter_value, &flow_box_clone);
-            return gtk::glib::ControlFlow::Break;
-        }
-
-        let chunk_size = 120;
-        let end = (start + chunk_size).min(dataset.len());
-
-        for meta in &dataset[start..end] {
-            let button = gtk::Button::new();
-            button.set_label(&meta.emoji);
-            button.add_css_class("emoji-btn");
-
-            let emoji_str = meta.emoji.clone();
-            let window_click = window_clone.clone();
-            let clipboard_click = clipboard_clone.clone();
-
-            button.connect_clicked(move |_| {
-                if let Ok(mut clipboard) = clipboard_click.lock() {
-                    let _ = clipboard.set_text(&emoji_str);
-                }
-
-                std::thread::spawn(|| {
-                    std::thread::sleep(Duration::from_millis(120));
-                    send_command(CmdIPC::Delete(0));
-                });
-
-                let _ = fs::write(SHOULD_PASTE_FLAG, "1");
-                window_click.close();
-            });
-
-            flow_box_clone.insert(&button, -1);
-
-            entries_clone.borrow_mut().push(EmojiEntry {
-                button: button.clone(),
-                search_text: meta.search_text.clone(),
-                matches: Cell::new(true),
-            });
-        }
-
-        progress.set(end);
-
-    let filter_value = current_filter_clone.borrow().clone();
-    apply_emoji_filter(&entries_clone, &filter_value, &flow_box_clone);
-
-        if end >= dataset.len() {
-            gtk::glib::ControlFlow::Break
-        } else {
-            gtk::glib::ControlFlow::Continue
-        }
-    });
-}
-
-fn build_ui(app: &Application) {
-    // -------------------- Window Creation ----------------------
-    let window = gtk::ApplicationWindow::builder().build();
-    window.set_application(Some(app)); // <- Window is assigned to our main application
-    let persistent_clipboard = Arc::new(
-        Mutex::new(
-            Clipboard::new().unwrap()
-    ));
-    // -----------------------------------------------------------
-
-
-    // -------------------- Window Settings ----------------------
-    // Changables
-    const WIDTH      : i32    = 360;
-    const HEIGHT     : i32    = 400;
-
-    // Flags
-    const TOP_PANEL  : bool   = false;
-    const MODAL      : bool   = true;
-
-    // Apply the settings
-    window.set_default_size(WIDTH, HEIGHT);
-
-    window.set_decorated(TOP_PANEL);
-    window.set_modal(MODAL);
-    // -----------------------------------------------------------
-
-
-    // ------------------------ CSS ------------------------------
-    let css_provider = gtk::CssProvider::new();
-    css_provider.load_from_data(include_str!("./style.css"));
-
-    gtk::style_context_add_provider_for_display(
-        &WidgetExt::display(&window),
-        &css_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-    // -----------------------------------------------------------
-
-
-   // --------------------- Main Layout --------------------------
-    let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    main_box.add_css_class("main-box");
-
-    let header_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    header_box.add_css_class("header-box");
-
-    let clipboard_tab = gtk::Button::new();
-    clipboard_tab.set_icon_name("edit-paste-symbolic");
-    clipboard_tab.add_css_class("tab-button");
-    clipboard_tab.add_css_class("active-tab");
-
-    let emoji_tab = gtk::Button::new();
-    emoji_tab.set_icon_name("face-smile-symbolic");
-    emoji_tab.add_css_class("tab-button");
-
-    header_box.append(&clipboard_tab);
-    header_box.append(&emoji_tab);
-
-    let clear_all_btn = gtk::Button::new();
-    clear_all_btn.set_label("Clear All");
-    clear_all_btn.add_css_class("clear-all-btn");
-    clear_all_btn.set_hexpand(true);
-    clear_all_btn.set_halign(gtk::Align::End);
-
-    header_box.append(&clear_all_btn);
-    main_box.append(&header_box);
-
-    // Search box (for emojis)
-    let search_entry = gtk::Entry::new();
-    search_entry.set_placeholder_text(Some("Search emojis..."));
-    search_entry.add_css_class("search-entry");
-    search_entry.set_visible(false); // Hidden by default
-    main_box.append(&search_entry);
-
-    let scrolled_window = gtk::ScrolledWindow::new();
-    scrolled_window.add_css_class("scrollable-window");
-    scrolled_window.set_vexpand(true);
-    scrolled_window.set_hexpand(true);
-
-    let items_box = gtk::Box::new(gtk::Orientation::Vertical, 5);
-    items_box.add_css_class("items-box");
-
-    let emoji_flow_box = gtk::FlowBox::new();
-    emoji_flow_box.set_hexpand(false);
-    emoji_flow_box.set_valign(gtk::Align::Start);
-    emoji_flow_box.set_vexpand(true);
-    emoji_flow_box.set_max_children_per_line(8);
-    emoji_flow_box.set_min_children_per_line(4);
-    emoji_flow_box.set_selection_mode(gtk::SelectionMode::None);
-    emoji_flow_box.set_homogeneous(true);
-    emoji_flow_box.set_row_spacing(1);
-    emoji_flow_box.set_column_spacing(1);
-
-    let emoji_entries = Rc::new(RefCell::new(Vec::<EmojiEntry>::new()));
-    let emojis_initialized = Rc::new(Cell::new(false));
-    let emoji_dataset = Rc::new(build_emoji_dataset());
-    let emoji_filter_text = Rc::new(RefCell::new(String::new()));
-    let image_preview_cache: ImagePreviewCache = Rc::new(RefCell::new(HashMap::new()));
-    let refresh_generation = Rc::new(Cell::new(0u64));
-
-    {
-        let entries_for_filter = emoji_entries.clone();
-        emoji_flow_box.set_filter_func(move |child| {
-            if let Some(widget) = child.child() {
-                if let Ok(button) = widget.downcast::<gtk::Button>() {
-                    if let Ok(entries) = entries_for_filter.try_borrow() {
-                        for entry in entries.iter() {
-                            if entry.button == button {
-                                return entry.matches.get();
-                            }
-                        }
-                    }
-                }
-            }
-            false
-        });
-    }
-
-    scrolled_window.set_child(Some(&items_box));
-    main_box.append(&scrolled_window);
-    window.set_child(Some(&main_box));
-    // -----------------------------------------------------------
-
-    // Initial items load
-    refresh_items(
-        &items_box,
-        &window,
-        persistent_clipboard.clone(),
-        image_preview_cache.clone(),
-        refresh_generation.clone(),
-    );
-
-    // Tab switching
-    let items_box_clip = items_box.clone();
-    let window_clip = window.clone();
-    let clipboard_clip = persistent_clipboard.clone();
-    let emoji_tab_clip = emoji_tab.clone();
-    let search_entry_clip = search_entry.clone();
-    let clear_all_clip = clear_all_btn.clone();
-    let image_preview_cache_clip = image_preview_cache.clone();
-    let refresh_generation_clip = refresh_generation.clone();
-    clipboard_tab.connect_clicked(move |btn| {
-        btn.add_css_class("active-tab");
-        emoji_tab_clip.remove_css_class("active-tab");
-        search_entry_clip.set_visible(false);
-        clear_all_clip.set_visible(true);
-        refresh_items(
-            &items_box_clip,
-            &window_clip,
-            clipboard_clip.clone(),
-            image_preview_cache_clip.clone(),
-            refresh_generation_clip.clone(),
-        );
-    });
-
-    let items_box_emoji = items_box.clone();
-    let window_emoji = window.clone();
-    let clipboard_emoji = persistent_clipboard.clone();
-    let clipboard_tab_emoji = clipboard_tab.clone();
-    let search_entry_emoji = search_entry.clone();
-    let clear_all_emoji = clear_all_btn.clone();
-    let emoji_flow_box_tab = emoji_flow_box.clone();
-    let emoji_entries_emoji = emoji_entries.clone();
-    let emojis_initialized_emoji = emojis_initialized.clone();
-    let emoji_dataset_emoji = emoji_dataset.clone();
-    let emoji_filter_text_emoji = emoji_filter_text.clone();
-    emoji_tab.connect_clicked(move |btn| {
-        btn.add_css_class("active-tab");
-        clipboard_tab_emoji.remove_css_class("active-tab");
-        search_entry_emoji.set_visible(true);
-        clear_all_emoji.set_visible(false);
-        let current_search = search_entry_emoji.text().to_string();
-        let filter_owned = if current_search.trim().is_empty() {
-            None
-        } else {
-            Some(current_search.to_lowercase())
-        };
-
-        show_emojis(
-            &items_box_emoji,
-            &window_emoji,
-            clipboard_emoji.clone(),
-            filter_owned.as_deref(),
-            &emoji_flow_box_tab,
-            emoji_entries_emoji.clone(),
-            emojis_initialized_emoji.clone(),
-            emoji_dataset_emoji.clone(),
-            emoji_filter_text_emoji.clone(),
-        );
-    });
-
-    // Emoji search
-    let emoji_entries_search = emoji_entries.clone();
-    let emojis_initialized_search = emojis_initialized.clone();
-    let emoji_filter_text_search = emoji_filter_text.clone();
-    let emoji_flow_box_search = emoji_flow_box.clone();
-    search_entry.connect_changed(move |entry| {
-        let search_text = entry.text().to_string().to_lowercase();
-        *emoji_filter_text_search.borrow_mut() = search_text;
-        if emojis_initialized_search.get() {
-            let filter_value = emoji_filter_text_search.borrow().clone();
-            apply_emoji_filter(&emoji_entries_search, &filter_value, &emoji_flow_box_search);
-        }
-    });
-
-    // Clear All button handler
-    let items_box_clear = items_box.clone();
-    let window_clear = window.clone();
-    let clipboard_clear = persistent_clipboard.clone();
-    let image_preview_cache_clear = image_preview_cache.clone();
-    let refresh_generation_clear = refresh_generation.clone();
-    clear_all_btn.connect_clicked(move |_| {
-        let observer = items_box_clear.observe_children();
-        let mut revealers: Vec<gtk::Revealer> = Vec::new();
-
-        for idx in 0..observer.n_items() {
-            if let Some(obj) = observer.item(idx).and_then(|o| o.downcast::<gtk::Revealer>().ok()) {
-                revealers.push(obj);
+            // Call the appropriate render function
+            if is_clipboard {
+                self.render_clipboard_items();
+            } else {
+                self.render_emojis();
             }
         }
+    }
 
-        if revealers.is_empty() {
-            std::thread::spawn(|| {
-                send_command(CmdIPC::Clear);
-            });
-            refresh_items(
-                &items_box_clear,
-                &window_clear,
-                clipboard_clear.clone(),
-                image_preview_cache_clear.clone(),
-                refresh_generation_clear.clone(),
-            );
-            return;
-        }
+    /// Connects signals and presents the main window.
+    /// This consumes the Rc<Self> to correctly set up closures.
+    fn build(self: Rc<Self>) {
+        // -------------------- Initial State -------------------------
+        // Initial Clipboard render
+        self.render_clipboard_items();
+        // ------------------------------------------------------------
 
-        let original_spacing = items_box_clear.spacing();
-        items_box_clear.set_spacing(0);
+        // -------------------- Connect Events ------------------------
+        let all_items = self.items_box.clone();
 
-        for (idx, revealer) in revealers.iter().enumerate() {
-            let revealer_clone = revealer.clone();
-            let delay = (idx as u64) * 16;
-            gtk::glib::timeout_add_local_once(Duration::from_millis(delay), move || {
-                revealer_clone.set_reveal_child(false);
-            });
-        }
+        // Clear all btn connector
+        self.clear_all_btn.connect_clicked(move |_| {
+            // Clear all items
+            Self::clear_items_box(&all_items);
 
-        let total_delay = 240 + (revealers.len() as u64 * 16);
-        let items_box_after = items_box_clear.clone();
-        let window_after = window_clear.clone();
-        let clipboard_after = clipboard_clear.clone();
-        let spacing_restore = original_spacing;
-        let image_cache_after = image_preview_cache_clear.clone();
-        let refresh_generation_after = refresh_generation_clear.clone();
+            // Show empty clipboard screen
+            Self::clipboard_empty_state(&all_items);
 
-        gtk::glib::timeout_add_local_once(Duration::from_millis(total_delay), move || {
-            while let Some(child) = items_box_after.first_child() {
-                items_box_after.remove(&child);
-            }
-
-            items_box_after.set_spacing(spacing_restore);
-
-            std::thread::spawn(|| {
-                send_command(CmdIPC::Clear);
-            });
-
-            append_empty_state(&items_box_after);
-
-            let items_box_refresh = items_box_after.clone();
-            let window_refresh = window_after.clone();
-            let clipboard_refresh = clipboard_after.clone();
-            let image_cache_refresh = image_cache_after.clone();
-            let refresh_generation_refresh = refresh_generation_after.clone();
-            let spacing_refresh = spacing_restore;
-
-            gtk::glib::timeout_add_local_once(Duration::from_millis(60), move || {
-                items_box_refresh.set_spacing(spacing_refresh);
-                refresh_items(
-                    &items_box_refresh,
-                    &window_refresh,
-                    clipboard_refresh.clone(),
-                    image_cache_refresh.clone(),
-                    refresh_generation_refresh.clone(),
-                );
+            // Send message to server to clear
+            thread::spawn(move || {
+                Self::send_command(CmdIPC::Clear);
             });
         });
+
+        // Tab Switching
+        // `self` is Rc<GUI>, so `self.clone()` clones the Rc
+        let gui_clone_stack = self.clone(); 
+        self.stack.connect_visible_child_name_notify(move |stack| {
+            // Call the instance method on the cloned Rc
+            gui_clone_stack.handle_tab_switch(stack);
+        });
+
+        // Quit Events
+        // Quit when "esc" is pressed
+        let window_clone = self.window.clone(); // Need a new clone for this closure
+        let tx = self.main_thread_tx.clone();
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.connect_key_pressed(move |_, key, _, _| {
+            if key == Key::Escape {
+                Self::close_window(window_clone.clone(), tx.clone());
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        self.window.add_controller(key_controller);
+
+        // Quit when focus is lost
+        let window_clone = self.window.clone(); // Need a new clone for this closure
+        let tx = self.main_thread_tx.clone();
+        self.window.connect_is_active_notify(move |window| {
+            if !window.is_active() {
+                Self::close_window(window_clone.clone(), tx.clone());
+            }
+        });
+        
+        // Emoji Search
+        // Clone the Rc for the search entry closure
+        let gui_clone_search = self.clone();
+        self.search_entry.connect_changed(move |_| {
+            // Re-render the emoji list every time the text changes
+            gui_clone_search.render_emojis();
+        });
+        // -----------------------------------------------------------
+
+        // Present the window
+        self.window.present();
+    }
+}
+
+fn build_ui(app: &Application, tx: Sender<MainThreadMsg>) {
+    // Create the Gui. This struct now owns all the widgets.
+    // The `Rc` will keep `gui` alive as long as the closures
+    // (event handlers) are alive.
+    let gui = GUI::new(app, tx);
+    gui.build();
+}
+
+pub fn run_gui(tx: Sender<MainThreadMsg>) {
+    let app = Application::builder()
+        .application_id(GUI::APP_ID)
+        .build();
+
+    app.connect_activate(move |app| {
+        build_ui(app, tx.clone());
     });
-
-    // ---------------------- Quit Events ------------------------
-    let key_controller = gtk::EventControllerKey::new();
-    let window_esc = window.clone();
-
-    key_controller.connect_key_pressed(move |_, key, _, _| {
-        if key == Key::Escape {
-            window_esc.close();
-            gtk::glib::Propagation::Stop
-        } else {
-            gtk::glib::Propagation::Proceed
-        }
-    });
-    window.add_controller(key_controller);
-
-    window.connect_is_active_notify(move |window| {
-        if !window.is_active() {
-            window.close()
-        }
-    });
-    // -----------------------------------------------------------
-
-    window.present();
+    app.run_with_args(&Vec::<String>::new());
 }

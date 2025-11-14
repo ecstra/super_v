@@ -3,8 +3,7 @@ use std::{
     fs,
     thread,
     process, 
-    time::Duration,
-    path::Path
+    time::Duration
 };
 
 // External Crates
@@ -19,7 +18,7 @@ use super_v::{
         LOCK_PATH, 
         SOCKET_PATH
     }, 
-    gui::clipboard_gui::{SHOULD_PASTE_FLAG, run_gui},
+    gui::clipboard_gui::{MainThreadMsg, run_gui},
     services::{
         clipboard_manager::Manager, 
         ydotol::send_shift_insert
@@ -84,18 +83,39 @@ fn main() {
             start_manager_daemon();
         },
         Command::OpenGui => {
-            // Remove flag if it exists from previous run
-            let _ = fs::remove_file(SHOULD_PASTE_FLAG);
-            
-            run_gui();
-            
-            // Check if flag file exists (item was clicked)
-            if Path::new(SHOULD_PASTE_FLAG).exists() {
-                thread::sleep(Duration::from_millis(100));
-                send_shift_insert();
-                // Clean up flag
-                let _ = fs::remove_file(SHOULD_PASTE_FLAG);
-            }
+            use std::sync::mpsc::{self, channel};
+
+            // Create a simple streaming channel
+            let (tx, rx) = channel::<MainThreadMsg>();
+
+            let ydotool_handle = std::thread::spawn(move || {
+
+                loop {
+                    match rx.try_recv() {
+                        Ok(msg) => {
+                            // We got a message, handle it
+                            match msg {
+                                MainThreadMsg::AutoPaste => {
+                                    thread::sleep(Duration::from_millis(100));
+                                    send_shift_insert();
+                                    break;
+                                },
+                                MainThreadMsg::Close => {break;}
+                            }
+                        },
+                        Err(mpsc::TryRecvError::Empty) => {
+                            // No message, just continue
+                        },
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Should be in main thread
+            run_gui(tx);
+            let _ = ydotool_handle.join();
         },
         Command::Clean => {
             let _ = fs::remove_file(SOCKET_PATH);
