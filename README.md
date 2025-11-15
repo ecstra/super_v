@@ -96,6 +96,7 @@ Logs live in `/var/log/superv.log`.
 - **Clipboard item layout**: Long text entries currently ignore the intended max width and can stretch rows taller than their neighbors.
 - **Emoji auto-paste reliability**: Occasionally an emoji does not paste on the first try and needs to be triggered again.
 - **Emoji cleanup timing**: The asynchronous clean-and-paste workflow for emojis is inconsistent. An emoji may linger in history for ~240 ms or fail to paste before the cleanup kicks in. A more reliable approach is planned.
+- **Emoji Screen**:The emojis screen takes a second to load when opened directly.
 
 ## IPC API
 
@@ -170,6 +171,7 @@ Ideas that would help a ton:
 - Persist history across restarts.
 - Extend format support (rich text, HTML fragments, etc.).
 - Extended Emojis (ASCII?)
+- Paste emojiS (multiple at once) without closing window.
 - Polish the GTK layout for different DPI/scale factors.
 - GUI Hiccups/Stutters + More animations.
 - Package for your distro of choice.

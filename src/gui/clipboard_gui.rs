@@ -16,6 +16,12 @@ pub enum MainThreadMsg {
     Close,
 }
 
+#[derive(Clone, Copy)]
+pub enum InitialTab {
+    Clipboard,
+    Emoji,
+}
+
 struct Gui {
     window: gtk::ApplicationWindow,
     stack: gtk::Stack,
@@ -573,12 +579,7 @@ impl Gui {
 
     /// Connects signals and presents the main window.
     /// This consumes the Rc<Self> to correctly set up closures.
-    fn build(self: Rc<Self>) {
-        // -------------------- Initial State -------------------------
-        // Initial Clipboard render
-        self.render_clipboard_items();
-        // ------------------------------------------------------------
-
+    fn build(self: Rc<Self>, initial_tab: InitialTab) {
         // -------------------- Connect Events ------------------------
         let all_items = self.items_box.clone();
 
@@ -643,6 +644,12 @@ impl Gui {
             gui_clone_stack.handle_tab_switch(stack);
         });
 
+        match initial_tab {
+            InitialTab::Clipboard => self.stack.set_visible_child_name("clipboard"),
+            InitialTab::Emoji => self.stack.set_visible_child_name("emoji"),
+        }
+        self.handle_tab_switch(&self.stack);
+
         // Quit Events
         // Quit when "esc" is pressed
         let window_clone = self.window.clone(); // Need a new clone for this closure
@@ -681,22 +688,22 @@ impl Gui {
     }
 }
 
-fn build_ui(app: &Application, tx: Sender<MainThreadMsg>) {
+fn build_ui(app: &Application, tx: Sender<MainThreadMsg>, initial_tab: InitialTab) {
     // Create the Gui. This struct now owns all the widgets.
     // The `Rc` will keep `gui` alive as long as the closures
     // (event handlers) are alive.
     let gui = Gui::new(app, tx);
-    gui.build();
+    gui.build(initial_tab);
 }
 
-pub fn run_gui(tx: Sender<MainThreadMsg>) {
+pub fn run_gui(tx: Sender<MainThreadMsg>, tab: InitialTab) {
     gtk::glib::set_application_name("Super V");
     gtk::glib::set_prgname(Some("super_v"));
 
     let app = Application::builder().application_id(Gui::APP_ID).build();
 
     app.connect_activate(move |app| {
-        build_ui(app, tx.clone());
+        build_ui(app, tx.clone(), tab);
     });
     app.run_with_args(&Vec::<String>::new());
 }

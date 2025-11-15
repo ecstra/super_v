@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 // My Crates
 use super_v::{
     common::{LOCK_PATH, SOCKET_PATH},
-    gui::clipboard_gui::{MainThreadMsg, run_gui},
+    gui::clipboard_gui::{InitialTab, MainThreadMsg, run_gui},
     services::{clipboard_manager::Manager, ydotool::send_shift_insert},
 };
 
@@ -28,6 +28,9 @@ enum Command {
 
     /// Open the GUI
     OpenGui,
+
+    /// Opens the emoji screen
+    OpenEmoji,
 
     /// Cleans any leftovers
     Clean,
@@ -89,7 +92,31 @@ fn main() {
             });
 
             // Should be in main thread
-            run_gui(tx);
+            run_gui(tx, InitialTab::Clipboard);
+            let _ = ydotool_handle.join();
+        }
+        Command::OpenEmoji => {
+            use std::sync::mpsc::channel;
+
+            // Create a simple streaming channel
+            let (tx, rx) = channel::<MainThreadMsg>();
+
+            let ydotool_handle = std::thread::spawn(move || {
+                while let Ok(msg) = rx.recv() {
+                    match msg {
+                        MainThreadMsg::AutoPaste => {
+                            thread::sleep(Duration::from_millis(100));
+                            send_shift_insert();
+                        }
+                        MainThreadMsg::Close => {
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Should be in main thread
+            run_gui(tx, InitialTab::Emoji);
             let _ = ydotool_handle.join();
         }
         Command::Clean => {
