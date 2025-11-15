@@ -73,6 +73,12 @@ The script stops the user unit, tears down lingering, removes binaries and unit 
 - **Clipboard tab**: click any row to copy it back into the system clipboard and auto-paste. Use the trash icon to delete an entry or the header button to clear everything with an animated wipe.
 - **Emoji tab**: type to filter by emoji name, click to copy+paste immediately, and the history records the emoji so it is available in the clipboard tab too.
 
+### Trigger bindings
+
+Bind a global shortcut in your desktop’s keyboard settings (or window manager config) so it runs `super_v open-gui`. The command lives in `/usr/local/bin` after `install.sh`, and any launcher or hotkey tool that can execute shell commands can trigger it.
+
+**Example (Ubuntu 24.04 / GNOME):** Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → add a shortcut named “Super V” with command `super_v open-gui`, then press `Super+V` when prompted for the key combo.
+
 ### Service management
 
 > **Note**: Auto handled by install.sh
